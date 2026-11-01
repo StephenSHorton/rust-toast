@@ -34,15 +34,16 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSApplicationDidChangeScreenParametersNotification, NSBackingStoreType, NSBezierPath, NSColor,
-    NSCompositingOperation, NSCursor, NSEvent, NSEventModifierFlags, NSFont, NSFontAttributeName,
-    NSFontWeightRegular, NSFontWeightSemibold, NSForegroundColorAttributeName, NSImage,
-    NSImageSymbolConfiguration, NSLineBreakMode, NSMutableParagraphStyle, NSPanel,
-    NSParagraphStyleAttributeName, NSRectFill, NSRectFillUsingOperation, NSResponder, NSScreen,
-    NSSound, NSStatusWindowLevel, NSStringDrawing, NSStringDrawingOptions,
-    NSStringNSExtendedStringDrawing, NSTextAlignment, NSTrackingArea, NSTrackingAreaOptions,
-    NSView, NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowSharingType,
-    NSWindowStyleMask, NSWorkspace,
+    NSApplicationDidChangeScreenParametersNotification, NSBackingStoreType, NSBezierPath,
+    NSBitmapFormat, NSBitmapImageRep, NSColor, NSCompositingOperation, NSCursor,
+    NSDeviceRGBColorSpace, NSEvent, NSEventModifierFlags, NSFont, NSFontAttributeName,
+    NSFontWeightRegular, NSFontWeightSemibold, NSForegroundColorAttributeName, NSGraphicsContext,
+    NSImage, NSImageInterpolation, NSImageSymbolConfiguration, NSLineBreakMode,
+    NSMutableParagraphStyle, NSPanel, NSParagraphStyleAttributeName, NSRectFill,
+    NSRectFillUsingOperation, NSResponder, NSScreen, NSSound, NSStatusWindowLevel, NSStringDrawing,
+    NSStringDrawingOptions, NSStringNSExtendedStringDrawing, NSTextAlignment, NSTrackingArea,
+    NSTrackingAreaOptions, NSView, NSWindowAnimationBehavior, NSWindowCollectionBehavior,
+    NSWindowSharingType, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{
     NSData, NSDictionary, NSNotificationCenter, NSOperationQueue, NSPoint, NSRect, NSRunLoop,
@@ -57,6 +58,7 @@ use crate::layout::{
     BODY_GAP_DIP, BODY_SIZE_DIP, BUTTON_SIZE_DIP, ICON_LEFT_DIP, ICON_SIZE_DIP, PAD_TOP_DIP, Part,
     Rect, STRIPE_DIP, TEXT_LEFT_DIP, TEXT_RIGHT_DIP, TITLE_DIP, TITLE_RIGHT_DIP, TITLE_SIZE_DIP,
 };
+use crate::note::Image;
 
 /// The platform draws cards.
 pub const DRAWS: bool = true;
@@ -640,6 +642,64 @@ fn ns_rect(r: Rect) -> NSRect {
     )
 }
 
+/// The image as an NSImage of its pixel size (straight alpha, sRGB-ish
+/// device RGB, which is what a screenshot PNG holds).
+fn ns_image(img: &Image) -> Option<Retained<NSImage>> {
+    let (w, h) = (img.w as isize, img.h as isize);
+    // Null planes: the rep owns its buffer, and we copy the pixels in.
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            w,
+            h,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            NSBitmapFormat::AlphaNonpremultiplied,
+            w * 4,
+            32,
+        )
+    }?;
+    let dst = rep.bitmapData();
+    if dst.is_null() || rep.bytesPerRow() != w * 4 {
+        return None;
+    }
+    unsafe { std::ptr::copy_nonoverlapping(img.rgba.as_ptr(), dst, img.rgba.len()) };
+    let ns = NSImage::initWithSize(NSImage::alloc(), NSSize::new(w as f64, h as f64));
+    ns.addRepresentation(&rep);
+    Some(ns)
+}
+
+/// The thumbnail scaled into r, its corners rounded, with a 1px border.
+fn draw_thumb(img: &Image, r: NSRect, border: &NSColor, radius: f64) {
+    let Some(ns) = ns_image(img) else { return };
+    let ctx = NSGraphicsContext::currentContext();
+    if let Some(c) = &ctx {
+        c.saveGraphicsState();
+        c.setImageInterpolation(NSImageInterpolation::High);
+    }
+    if radius > 0.0 {
+        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(r, radius, radius).addClip();
+    }
+    unsafe {
+        ns.drawInRect_fromRect_operation_fraction_respectFlipped_hints(
+            r,
+            NSRect::ZERO,
+            NSCompositingOperation::SourceOver,
+            1.0,
+            true, // the view is flipped; keep the picture upright
+            None,
+        )
+    };
+    if let Some(c) = &ctx {
+        c.restoreGraphicsState();
+    }
+    fill_box(r, None, Some(border), radius);
+}
+
 fn draw_card(all: NSRect, l: &Look) {
     let k = l.palette;
     let (w, h) = (all.size.width, all.size.height);
@@ -732,8 +792,12 @@ fn draw_card(all: NSRect, l: &Look) {
         }
     }
 
-    // Inner pieces (the x's hover fill, buttons) get a smaller radius.
+    // Inner pieces (the thumbnail, the x's hover fill, buttons) get a
+    // smaller radius.
     let inner = radius * 0.6;
+    if let Some((img, r)) = &l.image {
+        draw_thumb(img, ns_rect(*r), &rgb(k.border), inner);
+    }
     let close = ns_rect(l.close);
     let mut xc = rgb(k.faint);
     if l.hot == Part::Close {

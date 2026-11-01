@@ -25,6 +25,28 @@ pub const BODY_LINE_DIP: f64 = 17.0;
 pub const BODY_SIZE_DIP: f64 = 12.5;
 pub const MAX_BODY_LINES: usize = 2;
 
+/// The thumbnail under the body: at most the text column wide and this
+/// tall, never scaled up past half its pixel size (a Retina-sized shot).
+pub const THUMB_MAX_H_DIP: f64 = 120.0;
+/// Above the thumbnail.
+pub const THUMB_GAP_DIP: f64 = 8.0;
+
+/// The text column's width.
+pub const TEXT_WIDTH_DIP: f64 = CARD_WIDTH_DIP - TEXT_LEFT_DIP - TEXT_RIGHT_DIP;
+
+/// The thumbnail's size in dip for an image w x h px: it keeps its aspect,
+/// fits the slot, and is never drawn bigger than 1 dip per 2 px (so a
+/// small image stays small instead of going blurry). (0, 0) for an empty
+/// image.
+pub fn thumb_size_dip(w: u32, h: u32) -> (f64, f64) {
+    if w == 0 || h == 0 {
+        return (0.0, 0.0);
+    }
+    let (w, h) = (w as f64, h as f64);
+    let s = (TEXT_WIDTH_DIP / w).min(THUMB_MAX_H_DIP / h).min(0.5);
+    ((w * s).round().max(1.0), (h * s).round().max(1.0))
+}
+
 /// The x's hit box, in the top-right corner.
 pub const CLOSE_SIZE_DIP: f64 = 24.0;
 pub const CLOSE_INSET_DIP: f64 = 5.0;
@@ -42,14 +64,17 @@ pub const BUTTON_SPACE_DIP: f64 = 8.0;
 pub const BUTTON_SIZE_DIP: f64 = 12.5;
 pub const BUTTONS_RIGHT_DIP: f64 = TEXT_RIGHT_DIP;
 
-/// The height of a card with `body_lines` lines of body and, with
-/// `actions`, a button row. Title only is 44 dip; one body line makes it
-/// 62, Toru's original size.
-pub fn card_height_dip(body_lines: usize, actions: bool) -> f64 {
+/// The height of a card with `body_lines` lines of body, a thumbnail
+/// `thumb_h` dip tall (0 for none) and, with `actions`, a button row.
+/// Title only is 44 dip; one body line makes it 62, Toru's original size.
+pub fn card_height_dip(body_lines: usize, thumb_h: f64, actions: bool) -> f64 {
     let mut h = PAD_TOP_DIP + TITLE_DIP + PAD_BOTTOM_DIP;
     let lines = body_lines.min(MAX_BODY_LINES);
     if lines > 0 {
         h += BODY_GAP_DIP + lines as f64 * BODY_LINE_DIP;
+    }
+    if thumb_h > 0.0 {
+        h += THUMB_GAP_DIP + thumb_h;
     }
     if actions {
         h += BUTTON_GAP_DIP + BUTTON_DIP;
@@ -139,6 +164,19 @@ impl Part {
             Part::Body => -1,
             Part::Button(i) => i as i32,
         }
+    }
+}
+
+/// Where the thumbnail (tw x th dip) goes on a card with `body_lines`
+/// lines of body, in px: under the body, at the text's left edge.
+pub fn thumb_rect(body_lines: usize, tw: f64, th: f64, scale: f64) -> Rect {
+    let top = card_height_dip(body_lines, 0.0, false) - PAD_BOTTOM_DIP + THUMB_GAP_DIP;
+    let (l, t) = (px(TEXT_LEFT_DIP, scale), px(top, scale));
+    Rect {
+        l,
+        t,
+        r: l + px(tw, scale),
+        b: t + px(th, scale),
     }
 }
 

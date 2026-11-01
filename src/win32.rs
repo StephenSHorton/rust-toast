@@ -27,10 +27,11 @@ use windows_sys::Win32::Graphics::Gdi::{
     CreateFontIndirectW, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DIB_RGB_COLORS,
     DT_CALCRECT, DT_CENTER, DT_EDITCONTROL, DT_END_ELLIPSIS, DT_NOCLIP, DT_NOPREFIX, DT_SINGLELINE,
     DT_VCENTER, DT_WORDBREAK, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect,
-    GetDC, GetMonitorInfoW, GetStockObject, HBITMAP, HDC, HGDIOBJ, InvalidateRect, LOGFONTW,
-    MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromRect,
+    GetDC, GetMonitorInfoW, GetStockObject, HALFTONE, HBITMAP, HDC, HGDIOBJ, InvalidateRect,
+    LOGFONTW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromRect,
     MonitorFromWindow, NULL_BRUSH, PAINTSTRUCT, PS_SOLID, ReleaseDC, RoundRect, SRCCOPY,
-    SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
+    SelectClipRgn, SelectObject, SetBkMode, SetBrushOrgEx, SetStretchBltMode, SetTextColor,
+    SetWindowRgn, StretchDIBits, TRANSPARENT,
 };
 use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -60,6 +61,7 @@ use crate::layout::{
     PAD_TOP_DIP, Part, Rect, STRIPE_DIP, TEXT_LEFT_DIP, TEXT_RIGHT_DIP, TITLE_DIP, TITLE_RIGHT_DIP,
     TITLE_SIZE_DIP, px,
 };
+use crate::note::Image;
 
 /// The platform draws cards.
 pub const DRAWS: bool = true;
@@ -918,6 +920,79 @@ fn rect_of(r: Rect) -> RECT {
     win_rect(r)
 }
 
+/// img's pixels as top-down BGRX for a DIB, blended over bg (the card's
+/// window is opaque: its fade is whole-window alpha, not per pixel).
+fn bgrx_over(img: &Image, bg: Color) -> Vec<u8> {
+    let (br, bgg, bb) = bg.rgb();
+    let mix = |c: u8, b: u8, a: u32| ((c as u32 * a + b as u32 * (255 - a) + 127) / 255) as u8;
+    img.rgba
+        .chunks_exact(4)
+        .flat_map(|p| {
+            let a = p[3] as u32;
+            [mix(p[2], bb, a), mix(p[1], bgg, a), mix(p[0], br, a), 255]
+        })
+        .collect()
+}
+
+/// The thumbnail scaled into r (HALFTONE, so a shrink stays smooth),
+/// clipped to rounded corners, with a 1px border.
+fn draw_thumb(dc: HDC, img: &Image, r: RECT, bg: Color, border: Color, radius: i32) {
+    let (dw, dh) = (r.right - r.left, r.bottom - r.top);
+    if dw <= 0 || dh <= 0 {
+        return;
+    }
+    let px = bgrx_over(img, bg);
+    let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
+    bmi.bmiHeader = BITMAPINFOHEADER {
+        biSize: size_of::<BITMAPINFOHEADER>() as u32,
+        biWidth: img.w as i32,
+        biHeight: -(img.h as i32), // top-down
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: BI_RGB,
+        ..unsafe { std::mem::zeroed() }
+    };
+    unsafe {
+        let clip = if radius > 0 {
+            let rgn = CreateRoundRectRgn(
+                r.left,
+                r.top,
+                r.right + 1,
+                r.bottom + 1,
+                2 * radius,
+                2 * radius,
+            );
+            SelectClipRgn(dc, rgn);
+            Some(rgn)
+        } else {
+            None
+        };
+        let old = SetStretchBltMode(dc, HALFTONE);
+        SetBrushOrgEx(dc, 0, 0, null_mut()); // HALFTONE needs it reset
+        StretchDIBits(
+            dc,
+            r.left,
+            r.top,
+            dw,
+            dh,
+            0,
+            0,
+            img.w as i32,
+            img.h as i32,
+            px.as_ptr().cast(),
+            &bmi,
+            DIB_RGB_COLORS,
+            SRCCOPY,
+        );
+        SetStretchBltMode(dc, old);
+        if let Some(rgn) = clip {
+            SelectClipRgn(dc, null_mut());
+            DeleteObject(rgn);
+        }
+    }
+    boxed(dc, r, Color(0), border, radius);
+}
+
 fn draw_card(dc: HDC, cw: &Look) {
     let sc = cw.scale;
     let pal = cw.palette;
@@ -1005,8 +1080,12 @@ fn draw_card(dc: HDC, cw: &Look) {
         );
     }
 
-    // Inner pieces (the x's hover fill, buttons) get a smaller radius.
+    // Inner pieces (the thumbnail, the x's hover fill, buttons) get a
+    // smaller radius.
     let inner = cw.radius * 6 / 10;
+    if let Some((img, r)) = &cw.image {
+        draw_thumb(dc, img, rect_of(*r), pal.background, pal.border, inner);
+    }
     let mut xc = pal.faint;
     if cw.hot == Part::Close {
         boxed(dc, rect_of(cw.close), pal.hover, Color(0), inner);

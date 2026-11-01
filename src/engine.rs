@@ -22,8 +22,9 @@ use crate::config::{Config, Kind, Palette};
 use crate::layout::{
     CARD_GAP_DIP, CARD_MARGIN_DIP, CARD_WIDTH_DIP, MAX_BODY_LINES, Part, Rect, TEXT_LEFT_DIP,
     TEXT_RIGHT_DIP, button_rects, card_height_dip, close_rect, hit_part, px, stack_origins,
+    thumb_rect, thumb_size_dip,
 };
-use crate::note::{Callback, FULL_ALPHA, Note, Options, Stack, clean};
+use crate::note::{Callback, FULL_ALPHA, Image, Note, Options, Stack, clean};
 use crate::sound::{Sound, sound_for};
 
 /// What a window shows: everything a platform needs to draw a card.
@@ -36,6 +37,8 @@ pub struct Look {
     pub labels: Vec<String>,
     /// Body lines (0, 1 or 2).
     pub lines: usize,
+    /// The thumbnail and where it goes (px), under the body.
+    pub image: Option<(Image, Rect)>,
     pub w: i32,
     pub h: i32,
     /// The pixel scale (1 on macOS, where geometry is in points).
@@ -140,6 +143,8 @@ struct CardWin {
     kind: Kind,
     labels: Vec<String>,
     clickable: bool,
+    image: Option<Image>,
+    thumb: Rect,
     lines: usize,
     w: i32,
     h: i32,
@@ -337,6 +342,7 @@ impl Engine {
             rev: u64,
             title: String,
             body: String,
+            image: Option<Image>,
             kind: Kind,
             labels: Vec<String>,
             clickable: bool,
@@ -359,6 +365,7 @@ impl Engine {
                         rev: c.rev,
                         title: c.note.title.clone(),
                         body: c.note.body.clone(),
+                        image: c.note.image.clone(),
                         kind: c.note.kind,
                         labels: c.note.actions.iter().map(|a| a.label.clone()).collect(),
                         clickable: c.note.on_click.is_some(),
@@ -416,6 +423,8 @@ impl Engine {
                 kind: Kind::Info,
                 labels: vec![],
                 clickable: false,
+                image: None,
+                thumb: Rect::default(),
                 lines: 0,
                 w: 0,
                 h: 0,
@@ -440,6 +449,7 @@ impl Engine {
                 cw.kind = v.kind;
                 cw.labels = v.labels;
                 cw.clickable = v.clickable;
+                cw.image = v.image;
                 measure(&mut cw, surf);
                 if fresh && !surf.create(cw.key, &cw.cfg, cw.w, cw.h) {
                     continue;
@@ -594,6 +604,7 @@ fn look(cw: &CardWin) -> Look {
         kind: cw.kind,
         labels: cw.labels.clone(),
         lines: cw.lines,
+        image: cw.image.clone().map(|i| (i, cw.thumb)),
         w: cw.w,
         h: cw.h,
         scale: cw.scale,
@@ -622,7 +633,12 @@ fn measure(cw: &mut CardWin, surf: &mut dyn Surface) {
             .clamp(1, MAX_BODY_LINES);
     }
     let widths: Option<Vec<i32>> = cw.labels.iter().map(|l| surf.label_width(l, sc)).collect();
-    cw.h = px(card_height_dip(cw.lines, !cw.labels.is_empty()), sc);
+    let (tw, th) = cw
+        .image
+        .as_ref()
+        .map_or((0.0, 0.0), |i| thumb_size_dip(i.w, i.h));
+    cw.thumb = thumb_rect(cw.lines, tw, th, sc);
+    cw.h = px(card_height_dip(cw.lines, th, !cw.labels.is_empty()), sc);
     cw.close = close_rect(cw.w, sc);
     // A failed measure still leaves the buttons clickable.
     let widths = widths.unwrap_or_else(|| vec![0; cw.labels.len()]);

@@ -44,6 +44,41 @@ impl fmt::Debug for Action {
     }
 }
 
+/// A picture on a card: straight (not premultiplied) RGBA, row by row
+/// from the top. Decode and shrink it before posting; the card draws it
+/// scaled into its thumbnail slot ([`crate::layout::thumb_size_dip`]).
+/// Clones share the pixels, and two images are equal only when they share
+/// them, so redraws never compare pixel data.
+#[derive(Clone)]
+pub struct Image {
+    pub w: u32,
+    pub h: u32,
+    pub rgba: Arc<[u8]>,
+}
+
+impl Image {
+    /// `None` unless rgba holds exactly w x h pixels and neither is zero.
+    pub fn new(w: u32, h: u32, rgba: impl Into<Arc<[u8]>>) -> Option<Image> {
+        let rgba = rgba.into();
+        if w == 0 || h == 0 || rgba.len() as u64 != w as u64 * h as u64 * 4 {
+            return None;
+        }
+        Some(Image { w, h, rgba })
+    }
+}
+
+impl PartialEq for Image {
+    fn eq(&self, o: &Image) -> bool {
+        self.w == o.w && self.h == o.h && Arc::ptr_eq(&self.rgba, &o.rgba)
+    }
+}
+
+impl fmt::Debug for Image {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Image({}x{})", self.w, self.h)
+    }
+}
+
 /// One notification.
 #[derive(Clone, Default)]
 pub struct Note {
@@ -53,6 +88,8 @@ pub struct Note {
     pub title: String,
     /// Up to two lines; longer text is ellipsized.
     pub body: String,
+    /// A thumbnail under the body (a proof's screenshot).
+    pub image: Option<Image>,
     pub kind: Kind,
     /// Skips the sound.
     pub silent: bool,
@@ -77,6 +114,7 @@ impl fmt::Debug for Note {
             .field("id", &self.id)
             .field("title", &self.title)
             .field("body", &self.body)
+            .field("image", &self.image)
             .field("kind", &self.kind)
             .field("silent", &self.silent)
             .field("expire", &self.expire)

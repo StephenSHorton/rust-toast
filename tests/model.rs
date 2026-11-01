@@ -282,15 +282,15 @@ fn stack_origins_newest_nearest_corner() {
 
 #[test]
 fn card_heights() {
-    assert_eq!(card_height_dip(1, false), 62.0, "Toru's original 62");
-    assert_eq!(card_height_dip(0, false), 44.0);
+    assert_eq!(card_height_dip(1, 0.0, false), 62.0, "Toru's original 62");
+    assert_eq!(card_height_dip(0, 0.0, false), 44.0);
     assert_eq!(
-        card_height_dip(5, false),
-        card_height_dip(MAX_BODY_LINES, false)
+        card_height_dip(5, 0.0, false),
+        card_height_dip(MAX_BODY_LINES, 0.0, false)
     );
-    assert!(card_height_dip(0, true) > card_height_dip(0, false));
+    assert!(card_height_dip(0, 0.0, true) > card_height_dip(0, 0.0, false));
     assert_eq!(
-        card_height_dip(2, true),
+        card_height_dip(2, 0.0, true),
         11.0 + 21.0 + 12.0 + 1.0 + 34.0 + 36.0
     );
 }
@@ -538,4 +538,26 @@ fn partial_palette_fills_from_dark() {
     assert!(p.background == rgb(0, 0, 0) && p.foreground == DARK.foreground);
     assert!(p.accent.error == hex("#ff0000") && p.accent.warn == DARK.accent.warn);
     assert!(p.primary == DARK.accent.info && !p.on_primary.is_zero());
+}
+
+#[test]
+fn thumbnails_fit_the_slot() {
+    use toast::Image;
+    use toast::layout::{TEXT_WIDTH_DIP, THUMB_MAX_H_DIP, thumb_size_dip};
+    // A wide screenshot fills the column; a tall one is capped by height.
+    let (w, h) = thumb_size_dip(1920, 1080);
+    assert_eq!(w, TEXT_WIDTH_DIP.round().min(w));
+    assert!(w <= TEXT_WIDTH_DIP && h <= THUMB_MAX_H_DIP);
+    let (w, h) = thumb_size_dip(400, 2000);
+    assert_eq!(h, THUMB_MAX_H_DIP);
+    assert_eq!(w, 24.0);
+    // A small picture is never blown up past 2 px per dip.
+    assert_eq!(thumb_size_dip(40, 20), (20.0, 10.0));
+    assert_eq!(thumb_size_dip(0, 10), (0.0, 0.0));
+    assert_eq!(card_height_dip(1, 0.0, false), 62.0);
+    assert_eq!(card_height_dip(1, 100.0, false), 62.0 + 8.0 + 100.0);
+    // Image::new checks the buffer.
+    assert!(Image::new(2, 2, vec![0u8; 16]).is_some());
+    assert!(Image::new(2, 2, vec![0u8; 15]).is_none());
+    assert!(Image::new(0, 2, vec![]).is_none());
 }
