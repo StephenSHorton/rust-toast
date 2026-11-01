@@ -85,6 +85,11 @@ pub trait Surface {
     fn destroy(&mut self, key: u64);
     /// Runs or stops the 30 ms tick.
     fn timer(&mut self, on: bool);
+    /// Throws a confetti burst from a success card at `card` across the
+    /// screen whose work area is `work` (px, top-down), over everything and
+    /// without taking clicks. Called once per such post, after the card is
+    /// placed. The platform skips it while the OS asks for reduced motion.
+    fn confetti(&mut self, _card: Rect, _work: Rect) {}
 }
 
 /// How the next sync places the stack, in increasing strength.
@@ -119,6 +124,9 @@ struct Shared {
     opts: Options,
     /// Card keys on screen, oldest first (tests).
     keys: Vec<u64>,
+    /// Success cards posted with confetti on, burst at the next sync once
+    /// they are placed.
+    confetti: Vec<u64>,
 }
 
 /// One card's window and its copy of the content.
@@ -210,6 +218,7 @@ impl Engine {
                 cfg: Config::default().normalized(),
                 opts: Options::default(),
                 keys: vec![],
+                confetti: vec![],
             }),
             ui: Mutex::new(Ui {
                 wins: BTreeMap::new(),
@@ -269,7 +278,11 @@ impl Engine {
         }
         let sound =
             (!n.silent && o.sound).then(|| (sound_for(n.kind, !n.actions.is_empty()), o.volume));
-        s.stack.post(n, now);
+        let burst = o.confetti && n.kind == Kind::Success;
+        let (key, _) = s.stack.post(n, now);
+        if burst && !s.confetti.contains(&key) {
+            s.confetti.push(key);
+        }
         s.raise = true;
         Posted { shown: true, sound }
     }
@@ -330,7 +343,7 @@ impl Engine {
             alpha: u8,
         }
         let mut timed = false;
-        let (views, reloc, up, corner, cfg) = {
+        let (views, reloc, up, corner, cfg, bursts) = {
             let mut s = lock(&self.shared);
             let views: Vec<View> = s
                 .stack
@@ -359,6 +372,7 @@ impl Engine {
                 s.raise,
                 s.opts.corner.clone(),
                 s.cfg.clone(),
+                std::mem::take(&mut s.confetti),
             );
             s.reloc = Reloc::None;
             s.raise = false;
@@ -464,6 +478,18 @@ impl Engine {
             if !cw.placed {
                 cw.placed = true;
                 surf.show(cw.key);
+            }
+        }
+
+        for k in bursts {
+            if let Some(cw) = ui.wins.get(&k).filter(|cw| cw.placed) {
+                let card = Rect {
+                    l: cw.x,
+                    t: cw.y,
+                    r: cw.x + cw.w,
+                    b: cw.y + cw.h,
+                };
+                surf.confetti(card, ui.work);
             }
         }
 

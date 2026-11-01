@@ -25,6 +25,7 @@
 //! main dispatch queue, which runs because Tauri runs NSApp on the main
 //! thread; never start a second NSApp loop (inbox.md §7 trap 16).
 
+pub mod confetti;
 pub mod config;
 pub mod engine;
 pub mod layout;

@@ -42,7 +42,7 @@ use objc2_app_kit::{
     NSSound, NSStatusWindowLevel, NSStringDrawing, NSStringDrawingOptions,
     NSStringNSExtendedStringDrawing, NSTextAlignment, NSTrackingArea, NSTrackingAreaOptions,
     NSView, NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowSharingType,
-    NSWindowStyleMask,
+    NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{
     NSData, NSDictionary, NSNotificationCenter, NSOperationQueue, NSPoint, NSRect, NSRunLoop,
@@ -50,6 +50,7 @@ use objc2_foundation::{
 };
 
 use crate::ENGINE;
+use crate::confetti::{self, Burst};
 use crate::config::{Color, Config, Kind};
 use crate::engine::{Look, Mouse, Surface, TICK_MS};
 use crate::layout::{
@@ -109,6 +110,7 @@ thread_local! {
     static TICKER: RefCell<Option<Retained<NSTimer>>> = const { RefCell::new(None) };
     static SETUP: Cell<bool> = const { Cell::new(false) };
     static PLAYING: RefCell<Vec<Retained<NSSound>>> = const { RefCell::new(Vec::new()) };
+    static CONFETTI: RefCell<Option<Overlay>> = const { RefCell::new(None) };
 }
 
 fn sync() {
@@ -401,6 +403,13 @@ impl Surface for MacSurface {
                 timer.invalidate();
             }
         });
+    }
+
+    fn confetti(&mut self, card: Rect, _work: Rect) {
+        if NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion() {
+            return;
+        }
+        throw_confetti(self.mtm, card);
     }
 }
 
@@ -779,6 +788,184 @@ fn draw_card(all: NSRect, l: &Look) {
             NSTextAlignment::Center,
         );
     }
+}
+
+// ---- confetti ----
+
+/// The click-through panel the bursts are drawn in: one at a time, over
+/// the whole screen the card is on, gone when the last burst ends.
+struct Overlay {
+    panel: Retained<ToastPanel>,
+    view: Retained<ConfettiView>,
+    /// The screen's frame, px top-down.
+    area: Rect,
+    timer: Retained<NSTimer>,
+}
+
+struct ConfettiIvars {
+    bursts: RefCell<Vec<(Burst, Instant)>>,
+}
+
+define_class!(
+    #[unsafe(super(NSView, NSResponder, objc2_foundation::NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "IroriConfettiView"]
+    #[ivars = ConfettiIvars]
+    struct ConfettiView;
+
+    impl ConfettiView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            let now = Instant::now();
+            for (b, start) in self.ivars().bursts.borrow().iter() {
+                for p in b.at(now.saturating_duration_since(*start)) {
+                    let (r, g, bl) = p.color.rgb();
+                    NSColor::colorWithSRGBRed_green_blue_alpha(
+                        r as f64 / 255.0,
+                        g as f64 / 255.0,
+                        bl as f64 / 255.0,
+                        p.alpha,
+                    )
+                    .setFill();
+                    let c = p.corners();
+                    let path = NSBezierPath::bezierPath();
+                    path.moveToPoint(NSPoint::new(c[0].0, c[0].1));
+                    for q in &c[1..] {
+                        path.lineToPoint(NSPoint::new(q.0, q.1));
+                    }
+                    path.closePath();
+                    path.fill();
+                }
+            }
+        }
+    }
+);
+
+impl ConfettiView {
+    fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<ConfettiView> {
+        let this = ConfettiView::alloc(mtm).set_ivars(ConfettiIvars {
+            bursts: RefCell::new(vec![]),
+        });
+        unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+}
+
+/// Starts a burst from card (px, top-down), opening the overlay on the
+/// card's screen if it isn't up there already.
+fn throw_confetti(mtm: MainThreadMarker, card: Rect) {
+    let h = primary_height(mtm);
+    let c = NSPoint::new(
+        (card.l + card.r) as f64 / 2.0,
+        h - (card.t + card.b) as f64 / 2.0,
+    );
+    let screens = NSScreen::screens(mtm);
+    let Some(scr) = screens
+        .iter()
+        .find(|s| ns_point_in_rect(c, s.frame()))
+        .or_else(|| NSScreen::mainScreen(mtm))
+    else {
+        return;
+    };
+    let frame = scr.frame();
+    let area = top_down(mtm, frame);
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(1);
+    let burst = Burst::new(card, area, 1.0, seed);
+    CONFETTI.with(|o| {
+        let mut o = o.borrow_mut();
+        if o.as_ref().is_some_and(|ov| ov.area != area) {
+            close_overlay(o.take());
+        }
+        let ov = o.get_or_insert_with(|| open_overlay(mtm, frame, area));
+        ov.view
+            .ivars()
+            .bursts
+            .borrow_mut()
+            .push((burst, Instant::now()));
+        ov.view.setNeedsDisplay(true);
+        ov.panel.orderFrontRegardless();
+    });
+}
+
+fn open_overlay(mtm: MainThreadMarker, frame: NSRect, area: Rect) -> Overlay {
+    let p: Retained<ToastPanel> = unsafe {
+        msg_send![
+            ToastPanel::alloc(mtm),
+            initWithContentRect: frame,
+            styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
+            backing: NSBackingStoreType::Buffered,
+            defer: false,
+        ]
+    };
+    unsafe { p.setReleasedWhenClosed(false) };
+    p.setFloatingPanel(true);
+    p.setBecomesKeyOnlyIfNeeded(true);
+    p.setHidesOnDeactivate(false);
+    p.setLevel(NSStatusWindowLevel);
+    p.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::IgnoresCycle,
+    );
+    p.setOpaque(false);
+    p.setBackgroundColor(Some(&NSColor::clearColor()));
+    p.setHasShadow(false);
+    p.setMovable(false);
+    p.setAnimationBehavior(NSWindowAnimationBehavior::None);
+    // Every click goes through to whatever is under it.
+    p.setIgnoresMouseEvents(true);
+    if ENGINE.config().capture_exclude {
+        p.setSharingType(NSWindowSharingType::None);
+    }
+    p.setFrame_display(frame, false);
+    let bounds = NSRect::new(NSPoint::new(0.0, 0.0), frame.size);
+    let v = ConfettiView::new(mtm, bounds);
+    v.setWantsLayer(true);
+    p.setContentView(Some(&v));
+    let block = RcBlock::new(|_t: std::ptr::NonNull<NSTimer>| confetti_tick());
+    let timer = unsafe { NSTimer::timerWithTimeInterval_repeats_block(1.0 / 60.0, true, &block) };
+    unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
+    Overlay {
+        panel: p,
+        view: v,
+        area,
+        timer,
+    }
+}
+
+fn close_overlay(o: Option<Overlay>) {
+    if let Some(o) = o {
+        o.timer.invalidate();
+        o.panel.orderOut(None);
+    }
+}
+
+/// A frame: drops finished bursts, redraws, and closes the overlay when
+/// none are left.
+fn confetti_tick() {
+    CONFETTI.with(|o| {
+        let mut o = o.borrow_mut();
+        let Some(ov) = o.as_ref() else { return };
+        let now = Instant::now();
+        let left = {
+            let mut b = ov.view.ivars().bursts.borrow_mut();
+            b.retain(|(_, start)| now.saturating_duration_since(*start) < confetti::DURATION);
+            b.len()
+        };
+        if left == 0 {
+            close_overlay(o.take());
+        } else {
+            ov.view.setNeedsDisplay(true);
+        }
+    });
 }
 
 /// Runs NSApp on the main thread for d, then stops it: for test programs

@@ -105,16 +105,20 @@ pub struct Options {
     pub volume: f64,
     /// One of the `CORNER_*` values.
     pub corner: String,
+    /// A confetti burst from each success card. Off by default; the
+    /// platform also skips it while the OS asks for reduced motion.
+    pub confetti: bool,
 }
 
 impl Default for Options {
-    /// On, with sound, top-right.
+    /// On, with sound, top-right, no confetti.
     fn default() -> Self {
         Options {
             enabled: true,
             sound: true,
             volume: 0.6,
             corner: CORNER_TOP_RIGHT.into(),
+            confetti: false,
         }
     }
 }

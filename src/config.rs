@@ -25,7 +25,7 @@ pub fn hex(s: &str) -> Color {
 }
 
 /// [`hex`] for constants.
-const fn hx(v: u32) -> Color {
+pub(crate) const fn hx(v: u32) -> Color {
     Color(COLOR_SET | v)
 }
 

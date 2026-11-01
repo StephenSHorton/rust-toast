@@ -22,11 +22,12 @@ use std::time::Instant;
 
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CLEARTYPE_QUALITY, CreateCompatibleBitmap, CreateCompatibleDC,
-    CreateFontIndirectW, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DT_CALCRECT, DT_CENTER,
-    DT_EDITCONTROL, DT_END_ELLIPSIS, DT_NOCLIP, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
-    DT_WORDBREAK, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect, GetDC,
-    GetMonitorInfoW, GetStockObject, HDC, HGDIOBJ, InvalidateRect, LOGFONTW,
+    AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BeginPaint,
+    BitBlt, CLEARTYPE_QUALITY, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection,
+    CreateFontIndirectW, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DIB_RGB_COLORS,
+    DT_CALCRECT, DT_CENTER, DT_EDITCONTROL, DT_END_ELLIPSIS, DT_NOCLIP, DT_NOPREFIX, DT_SINGLELINE,
+    DT_VCENTER, DT_WORDBREAK, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect,
+    GetDC, GetMonitorInfoW, GetStockObject, HBITMAP, HDC, HGDIOBJ, InvalidateRect, LOGFONTW,
     MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromRect,
     MonitorFromWindow, NULL_BRUSH, PAINTSTRUCT, PS_SOLID, ReleaseDC, RoundRect, SRCCOPY,
     SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
@@ -40,16 +41,18 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
     GetForegroundWindow, GetMessageW, HWND_MESSAGE, HWND_TOPMOST, IDC_ARROW, IDC_HAND, KillTimer,
-    LWA_ALPHA, LoadCursorW, MA_NOACTIVATE, MSG, PostMessageW, RegisterClassExW, SPI_SETWORKAREA,
-    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SetCursor, SetLayeredWindowAttributes,
-    SetTimer, SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage,
+    LWA_ALPHA, LoadCursorW, MA_NOACTIVATE, MSG, PostMessageW, RegisterClassExW,
+    SPI_GETCLIENTAREAANIMATION, SPI_SETWORKAREA, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER,
+    SetCursor, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos,
+    ShowWindow, SystemParametersInfoW, TranslateMessage, ULW_ALPHA, UpdateLayeredWindow,
     WDA_EXCLUDEFROMCAPTURE, WM_APP, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR,
     WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use crate::ENGINE;
+use crate::confetti::{self, Burst};
 use crate::config::{Color, Config, Kind};
 use crate::engine::{Look, Mouse, Surface, TICK_MS};
 use crate::layout::{
@@ -65,6 +68,9 @@ const WM_SYNC: u32 = WM_APP + 1;
 /// A display or work-area change: re-place the stack.
 const WM_REHOME: u32 = WM_APP + 2;
 const TIMER_TICK: usize = 1;
+/// The confetti overlay's frames.
+const TIMER_CONFETTI: usize = 2;
+const CONFETTI_FRAME_MS: u32 = 16;
 /// WM_MOUSELEAVE (in windows-sys' Controls module, which this crate does not
 /// otherwise need).
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -152,12 +158,14 @@ fn run() {
     let inst = unsafe { GetModuleHandleW(null()) };
     let host_class = wide(&c.host_class_name());
     let card_class = wide(&c.card_class_name());
+    let confetti_class = wide(&confetti_class_name(&c));
     for (class, proc) in [
         (
             &host_class,
             host_proc as unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
         ),
         (&card_class, card_proc),
+        (&confetti_class, confetti_proc),
     ] {
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -241,6 +249,10 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
         WM_REHOME => {
             ENGINE.rehome();
             sync();
+            0
+        }
+        WM_TIMER if wp == TIMER_CONFETTI => {
+            confetti_frame();
             0
         }
         WM_TIMER => {
@@ -578,6 +590,229 @@ impl Surface for Win32Surface {
             }
         }
     }
+
+    fn confetti(&mut self, card: Rect, _work: Rect) {
+        // Client-area animation off is Windows' Reduce Motion
+        // (Settings > Accessibility > Visual effects > Animation effects).
+        let mut anim: i32 = 1;
+        let ok = unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                &mut anim as *mut i32 as *mut core::ffi::c_void,
+                0,
+            )
+        } != 0;
+        if ok && anim == 0 {
+            return;
+        }
+        throw_confetti(card);
+    }
+}
+
+// ---- confetti ----
+
+fn confetti_class_name(c: &Config) -> String {
+    format!("{}Confetti", c.class_prefix)
+}
+
+/// The overlay the bursts are drawn in: a layered, click-through
+/// (`WS_EX_TRANSPARENT`), never-activating topmost window over the whole
+/// monitor the card is on, fed premultiplied frames with
+/// UpdateLayeredWindow. One at a time; destroyed when the last burst ends.
+struct Overlay {
+    hwnd: HWND,
+    dc: HDC,
+    bmp: HBITMAP,
+    old: HGDIOBJ,
+    bits: *mut u32,
+    w: i32,
+    h: i32,
+    /// The monitor, physical px.
+    area: Rect,
+    bursts: Vec<(Burst, Instant)>,
+}
+
+thread_local! {
+    static CONFETTI: RefCell<Option<Overlay>> = const { RefCell::new(None) };
+}
+
+unsafe extern "system" fn confetti_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
+        _ => unsafe { DefWindowProcW(h, msg, wp, lp) },
+    }
+}
+
+/// Starts a burst from card (physical px), opening the overlay on the
+/// card's monitor if it isn't up there already.
+fn throw_confetti(card: Rect) {
+    let mon = unsafe { MonitorFromRect(&win_rect(card), MONITOR_DEFAULTTONEAREST) };
+    let mut mi: MONITORINFO = unsafe { std::mem::zeroed() };
+    mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+    if unsafe { GetMonitorInfoW(mon, &mut mi) } == 0 {
+        return;
+    }
+    let m = mi.rcMonitor;
+    let area = Rect {
+        l: m.left,
+        t: m.top,
+        r: m.right,
+        b: m.bottom,
+    };
+    let (_, scale) = work_area_of(mon);
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(1);
+    let burst = Burst::new(card, area, scale, seed);
+    CONFETTI.with(|o| {
+        let mut o = o.borrow_mut();
+        if o.as_ref().is_some_and(|ov| ov.area != area) {
+            close_overlay(o.take());
+        }
+        if o.is_none() {
+            *o = open_overlay(area);
+        }
+        if let Some(ov) = o.as_mut() {
+            ov.bursts.push((burst, Instant::now()));
+        }
+    });
+    confetti_frame();
+}
+
+fn open_overlay(area: Rect) -> Option<Overlay> {
+    let (w, h) = (area.r - area.l, area.b - area.t);
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let cfg = RUN_CFG
+        .with(|r| r.borrow().clone())
+        .unwrap_or_else(|| ENGINE.config());
+    let class = wide(&confetti_class_name(&cfg));
+    let title = wide(&cfg.app_name);
+    unsafe {
+        let hwnd = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+            class.as_ptr(),
+            title.as_ptr(),
+            WS_POPUP,
+            area.l,
+            area.t,
+            w,
+            h,
+            null_mut(),
+            null_mut(),
+            GetModuleHandleW(null()),
+            null(),
+        );
+        if hwnd.is_null() {
+            return None;
+        }
+        if cfg.capture_exclude {
+            SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+        }
+        let screen = GetDC(null_mut());
+        let dc = CreateCompatibleDC(screen);
+        ReleaseDC(null_mut(), screen);
+        let mut bi: BITMAPINFO = std::mem::zeroed();
+        bi.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -h, // top-down
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..std::mem::zeroed()
+        };
+        let mut bits: *mut core::ffi::c_void = null_mut();
+        let bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+        if dc.is_null() || bmp.is_null() || bits.is_null() {
+            if !bmp.is_null() {
+                DeleteObject(bmp);
+            }
+            if !dc.is_null() {
+                DeleteDC(dc);
+            }
+            DestroyWindow(hwnd);
+            return None;
+        }
+        let old = SelectObject(dc, bmp);
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        SetTimer(host(), TIMER_CONFETTI, CONFETTI_FRAME_MS, None);
+        Some(Overlay {
+            hwnd,
+            dc,
+            bmp,
+            old,
+            bits: bits as *mut u32,
+            w,
+            h,
+            area,
+            bursts: vec![],
+        })
+    }
+}
+
+fn close_overlay(o: Option<Overlay>) {
+    let Some(o) = o else { return };
+    unsafe {
+        KillTimer(host(), TIMER_CONFETTI);
+        DestroyWindow(o.hwnd);
+        SelectObject(o.dc, o.old);
+        DeleteObject(o.bmp);
+        DeleteDC(o.dc);
+    }
+}
+
+/// A frame: drops finished bursts, draws the rest, and closes the overlay
+/// when none are left.
+fn confetti_frame() {
+    CONFETTI.with(|o| {
+        let mut o = o.borrow_mut();
+        let Some(ov) = o.as_mut() else { return };
+        let now = Instant::now();
+        ov.bursts
+            .retain(|(_, start)| now.saturating_duration_since(*start) < confetti::DURATION);
+        if ov.bursts.is_empty() {
+            close_overlay(o.take());
+            return;
+        }
+        let pieces: Vec<confetti::Piece> = ov
+            .bursts
+            .iter()
+            .flat_map(|(b, start)| b.at(now.saturating_duration_since(*start)))
+            .collect();
+        let (w, h) = (ov.w as usize, ov.h as usize);
+        // SAFETY: the DIB section is w*h 32-bit pixels and lives as long as ov.
+        let buf = unsafe { std::slice::from_raw_parts_mut(ov.bits, w * h) };
+        confetti::rasterize(&pieces, w, h, buf);
+        let dst = windows_sys::Win32::Foundation::POINT {
+            x: ov.area.l,
+            y: ov.area.t,
+        };
+        let src = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+        let size = windows_sys::Win32::Foundation::SIZE { cx: ov.w, cy: ov.h };
+        let blend = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+        unsafe {
+            UpdateLayeredWindow(
+                ov.hwnd,
+                null_mut(),
+                &dst,
+                &size,
+                ov.dc,
+                &src,
+                0,
+                &blend,
+                ULW_ALPHA,
+            );
+        }
+    });
 }
 
 /// Draws the card into an off-screen bitmap and copies it in, so a hover

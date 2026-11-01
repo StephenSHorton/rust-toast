@@ -29,6 +29,7 @@ struct Rec {
     destroyed: Vec<u64>,
     timer: bool,
     work_calls: Vec<bool>,
+    bursts: Vec<(Rect, Rect)>,
 }
 
 impl Rec {
@@ -91,6 +92,9 @@ impl Surface for Rec {
     }
     fn timer(&mut self, on: bool) {
         self.timer = on;
+    }
+    fn confetti(&mut self, card: Rect, work: Rect) {
+        self.bursts.push((card, work));
     }
 }
 
@@ -435,4 +439,57 @@ fn two_line_bodies_grow_the_card() {
     let l = s.wins[&e.keys()[0]].look.clone().unwrap();
     assert_eq!(l.lines, 2, "clamped to two lines");
     assert_eq!(l.h, 11 + 21 + 12 + 1 + 34 + 36);
+}
+
+#[test]
+fn confetti_bursts_from_placed_success_cards_only_when_on() {
+    let e = engine();
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let ok = |title: &str| Note {
+        title: title.into(),
+        kind: Kind::Success,
+        ..Note::default()
+    };
+
+    // Off by default: no burst.
+    e.post(ok("done"), t0);
+    e.sync(&mut s, t0);
+    assert!(s.bursts.is_empty());
+
+    e.set_options(Options {
+        confetti: true,
+        ..Options::default()
+    });
+    e.post(note("info"), t0);
+    e.post(
+        Note {
+            kind: Kind::Error,
+            ..note("bad")
+        },
+        t0,
+    );
+    e.sync(&mut s, t0);
+    assert!(s.bursts.is_empty(), "only success cards throw confetti");
+
+    e.post(ok("finished"), t0);
+    e.sync(&mut s, t0);
+    assert_eq!(s.bursts.len(), 1);
+    let key = *e.keys().last().unwrap();
+    let (x, y, w, h) = s.wins[&key].pos;
+    let (card, work) = s.bursts[0];
+    assert_eq!(
+        card,
+        Rect {
+            l: x,
+            t: y,
+            r: x + w,
+            b: y + h
+        }
+    );
+    assert_eq!(work, s.work);
+
+    // Once per post: later syncs don't repeat it.
+    e.sync(&mut s, t0 + Duration::from_millis(30));
+    assert_eq!(s.bursts.len(), 1);
 }
