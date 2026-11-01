@@ -478,7 +478,7 @@ fn dark_is_toru() {
         (
             "success",
             d.accent.for_kind(Kind::Success),
-            rgb(0x4c, 0xab, 0xfd),
+            rgb(0x54, 0xc5, 0x7a),
         ),
         ("warn", d.accent.for_kind(Kind::Warn), rgb(0xf5, 0xae, 0x39)),
         (
@@ -489,6 +489,10 @@ fn dark_is_toru() {
     ] {
         assert_eq!(got, want, "{name}");
     }
+    assert_ne!(
+        d.accent.success, d.accent.info,
+        "success is green, not the info blue (#175)"
+    );
     assert_eq!(d, DARK, "Dark needs no derivation");
 }
 

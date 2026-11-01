@@ -161,8 +161,10 @@ pub struct Palette {
     pub on_primary: Color,
 }
 
-/// Toru's palette: near-black cards with a blue accent. Info and success
-/// share the blue; warn is amber, error red. Irori's cards use it.
+/// Toru's palette: near-black cards with a blue accent. Success is the
+/// window's success green (toru.css `--success`, oklch(0.74 0.15 152), the
+/// "Ready for you" pill; card #175); warn is amber, error red. Irori's
+/// cards use it.
 pub const DARK: Palette = Palette {
     background: hx(0x111213),
     foreground: hx(0xfafafa),
@@ -170,7 +172,7 @@ pub const DARK: Palette = Palette {
     border: hx(0x2c2e31),
     accent: Accents {
         info: hx(0x4cabfd),
-        success: hx(0x4cabfd),
+        success: hx(0x54c57a),
         warn: hx(0xf5ae39),
         error: hx(0xea3c3f),
     },
