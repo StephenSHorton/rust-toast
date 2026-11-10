@@ -1,7 +1,7 @@
 //! go-toast's toast_smoke_windows_test.go: real cards on the desktop, a
-//! click on one, and focus never moving. Opt-in (IRORI_TOAST_SMOKE=1): it
+//! click on one, and focus never moving. Opt-in (RUST_TOAST_SMOKE=1): it
 //! draws on the screen. Sounds are off, so it plays nothing. With
-//! IRORI_TOAST_SMOKE_GLASS=1 the cards are glass (card #529).
+//! RUST_TOAST_SMOKE_GLASS=1 the cards are glass (card #529).
 #![cfg(windows)]
 
 use std::sync::mpsc;
@@ -28,14 +28,14 @@ fn windows_soon(want: usize) -> Vec<isize> {
 
 #[test]
 fn toast_smoke() {
-    if std::env::var("IRORI_TOAST_SMOKE").as_deref() != Ok("1") {
-        eprintln!("skipped: set IRORI_TOAST_SMOKE=1");
+    if std::env::var("RUST_TOAST_SMOKE").as_deref() != Ok("1") {
+        eprintln!("skipped: set RUST_TOAST_SMOKE=1");
         return;
     }
     set_dpi_aware();
     toast::configure(Config {
         app_name: "Irori smoke".into(),
-        glass: if std::env::var("IRORI_TOAST_SMOKE_GLASS").as_deref() == Ok("1") {
+        glass: if std::env::var("RUST_TOAST_SMOKE_GLASS").as_deref() == Ok("1") {
             0.62
         } else {
             1.0

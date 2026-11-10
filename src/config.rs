@@ -166,8 +166,7 @@ pub struct Palette {
 
 /// Toru's palette: near-black cards with a blue accent. Success is the
 /// window's success green (toru.css `--success`, oklch(0.74 0.15 152), the
-/// "Ready for you" pill; card #175); warn is amber, error red. Irori's
-/// cards use it.
+/// "Ready for you" pill; card #175); warn is amber, error red.
 pub const DARK: Palette = Palette {
     background: hx(0x111213),
     foreground: hx(0xfafafa),
@@ -262,10 +261,10 @@ pub enum Scheme {
 /// [`Config::default`]: its `capture_exclude` is true.
 ///
 /// Not ported: go-toast's `IgnoreInput` and `HoldClickThrough` (Toru's
-/// auto clicker); Irori never set them (inbox.md §3.13).
+/// auto clicker).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
-    /// The windows' title and the log prefix (`irori: toast: ...`).
+    /// The windows' title and the log prefix (`<app>: toast: ...`).
     pub app_name: String,
     /// The window classes: the cards are `class_prefix`, the hidden host
     /// `class_prefix + "Host"`. Empty derives it from the app name.

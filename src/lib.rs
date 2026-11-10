@@ -1,5 +1,6 @@
-//! `irori-toast`: Irori's cards, a native port of go-toast v0.2.0
-//! (github.com/StephenSHorton/go-toast, inbox.md §3.13, §4, decision D7).
+//! `rust-toast`: native notification cards, a port of go-toast v0.2.0
+//! (github.com/StephenSHorton/go-toast). It grew up inside Irori and is
+//! shared by suzuri and other apps.
 //!
 //! Cards stack in a corner of the active screen, over every other window,
 //! never take focus, and carry up to two buttons and the s&box editor
@@ -18,12 +19,12 @@
 //! with a recording [`engine::Surface`].
 //!
 //! Not ported: `IgnoreInput`, `HoldClickThrough` and `Main` (Toru's auto
-//! clicker and plain-Go programs); Irori never used them.
+//! clicker and plain-Go programs).
 //!
-//! Wiring (M6 shell): on Windows nothing is needed; the first post starts
+//! Wiring: on Windows nothing is needed; the first post starts
 //! the card thread. On macOS the AppKit side queues all its work on the
 //! main dispatch queue, which runs because Tauri runs NSApp on the main
-//! thread; never start a second NSApp loop (inbox.md §7 trap 16).
+//! thread; never start a second NSApp loop.
 
 pub mod confetti;
 pub mod config;

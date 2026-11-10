@@ -1,18 +1,16 @@
 # toast on macOS: what the Mac must compile and check
 
 `src/darwin.rs` (the AppKit cards) was written on the PC against the objc2
-sources in the cargo registry; it now builds and passes clippy on the Mac
-(card #527). Everything else
+sources in the cargo registry; it builds and passes clippy on the Mac. Everything else
 in the crate (model, layout, sounds, the shared `Engine` the Win32 side
 also drives) is platform-neutral and tested on the PC.
 
 ## 1. Compile
 
 ```sh
-cargo build -p irori-toast
-cargo clippy -p irori-toast --all-targets -- -D warnings
-cargo test -p irori-toast            # model.rs and engine.rs run on any OS
-cargo build -p irori-notify --example test_card
+cargo build -p rust-toast
+cargo clippy -p rust-toast --all-targets -- -D warnings
+cargo test -p rust-toast            # model.rs and engine.rs run on any OS
 ```
 
 Expect API-name fixes in `darwin.rs`; the shape is a line-for-line port of
@@ -38,33 +36,33 @@ to need adjusting, each checked only by reading generated sources:
   queue; `objc2-av-foundation` is not in Cargo.lock, so NSSound on the main
   queue replaces it; switch if a sound clips or lags).
 - `DispatchQueue::main().exec_async` and `after` (dispatch2 0.3.1).
-- `darwin::run_for` (behind `toast::run_for`, used by the `test_card`
+- `darwin::run_for` (behind `toast::run_for`, used by the `demo`
   example): `NSApplication` with the Accessory policy, `run`, and a timed
   `stop` plus posted `ApplicationDefined` event (go-toast's `Main`).
 
-## 2. Check by hand (on a scratch IRORI_HOME, never the live data dir)
+## 2. Check by hand
 
-`IRORI_HOME=$(mktemp -d) cargo run -p irori-notify --example test_card 8`
-shows the settings' test card. With it up, check what go-toast's
+`cargo run --example demo 8` shows two cards (a success card and a
+sticky one with Open / Later). With it up, check what go-toast's
 `toast_smoke_darwin_test.go` asserted:
 
 - the card is top-right on the screen with the mouse, inside `visibleFrame`
   (below the menu bar), 340 x 94 pt, dark, blue stripe, `info.circle` icon,
-  two-line ellipsized body, Open Board (blue) and Close buttons;
-- the frontmost app did not change and Irori did not become active or key
+  two-line ellipsized body, Open (blue) and Later buttons;
+- the frontmost app did not change and the app did not become active or key
   (`NSWorkspace.frontmostApplication`, `NSApp.isActive`, `keyWindow` nil);
 - the panel's level is `NSStatusWindowLevel` (25), it is not key or main, and
   it shows on another Space and over a full-screen app;
 - hover brightens the x and pauses expiry; a press dragged off the card is no
   click; Control-click and right click dismiss; a body click with no action
-  dismisses; Open Board prints `open board`;
-- with `IRORI_TOAST_CAPTURE` unset (the `notify::Notifier` default; the
-  example sets `capture_visible`), `screencapture` does not show the card
+  dismisses; Open prints `open`;
+- with `capture_exclude` true (the `Config` default; the demo turns it
+  off), `screencapture` does not show the card
   (`NSWindowSharingNone`);
 - a screen unplugged or a resolution change under a sticky card moves the
   stack (`NSApplicationDidChangeScreenParametersNotification`).
 
-## 2b. The look (card #527)
+## 2b. The look
 
 Each panel's content view is a plain layer-backed view holding an
 `NSVisualEffectView` (BehindWindow, state Active since the panel is never
@@ -82,15 +80,9 @@ default (not NSApp's appearance, which Tauri may pin to the app's mode);
 DeliverImmediately: AppKit otherwise holds it while the app is inactive,
 which is when cards are up) queues syncs so cards flip at once.
 
-Check it: `IRORI_CARD_LOOK=<look.json>` applies a `notify::CardLook`;
-`IRORI_CARD_LOOK_DIR=<dir> test_card 20 cycle` restyles a sticky card
-through every `*.json` there every 2.5 s (`bun scripts/card-looks.ts <dir>`
-in `frontend/` writes one per theme and mode). `IRORI_CARD_SHOTS=<dir>`
-saves the screen's top-right corner after each look, captured from inside
-the process: its own windows need no Screen Recording grant, so this works
-where `screencapture` is refused (other apps' windows show as the desktop,
-which is what the glass blurs). Flip System Settings > Appearance while a
-`system` card is up: it follows within a second (checked on macOS 26.6).
+Check it: with a card up, flip System Settings > Appearance while the
+config's scheme is `System`: the card follows within a second (checked on
+macOS 26.6 in Irori).
 
 ## 3. Port the darwin smoke test
 

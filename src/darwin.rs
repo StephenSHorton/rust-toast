@@ -196,7 +196,7 @@ define_class!(
     /// Hears AppleInterfaceThemeChangedNotification (see setup).
     #[unsafe(super(objc2_foundation::NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "IroriToastThemeObserver"]
+    #[name = "RustToastThemeObserver"]
     struct ThemeObserver;
 
     impl ThemeObserver {
@@ -632,7 +632,7 @@ define_class!(
     /// Never key or main, so it can't take focus from anything.
     #[unsafe(super(NSPanel, objc2_app_kit::NSWindow, NSResponder, objc2_foundation::NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "IroriToastPanel"]
+    #[name = "RustToastPanel"]
     struct ToastPanel;
 
     impl ToastPanel {
@@ -664,7 +664,7 @@ struct ViewIvars {
 define_class!(
     #[unsafe(super(NSView, NSResponder, objc2_foundation::NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "IroriToastView"]
+    #[name = "RustToastView"]
     #[ivars = ViewIvars]
     struct ToastView;
 
@@ -1103,7 +1103,7 @@ struct ConfettiIvars {
 define_class!(
     #[unsafe(super(NSView, NSResponder, objc2_foundation::NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "IroriConfettiView"]
+    #[name = "RustToastConfettiView"]
     #[ivars = ConfettiIvars]
     struct ConfettiView;
 

@@ -1,16 +1,17 @@
 [package]
-name = "irori-toast"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-publish.workspace = true
-description = "Irori's cards: a native port of go-toast v0.2.0 (Win32 layered windows, AppKit panels)"
+name = "rust-toast"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Native notification cards for Windows and macOS: stacked in a screen corner, over every window, never take focus, with buttons, sounds and confetti"
+repository = "https://github.com/StephenSHorton/rust-toast"
+readme = "README.md"
 
 [lib]
 name = "toast"
-
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = [
+windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
@@ -23,8 +24,8 @@ windows-sys = { workspace = true, features = [
 ] }
 
 # The AppKit side (src/darwin.rs). It cannot be compiled on the PC; the Mac
-# builds and checks it (crates/toast/MAC.md). These crates are already in
-# Cargo.lock through tauri, and their default features enable every module.
+# builds and checks it (MAC.md). Their default features enable every
+# module; a Tauri app already has them in its Cargo.lock.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
 objc2-foundation = "0.3.2"
