@@ -26,7 +26,7 @@ struct Win {
 }
 
 #[derive(Default)]
-struct Rec {
+pub(crate) struct Rec {
     work: Rect,
     scale: f64,
     wins: BTreeMap<u64, Win>,
@@ -34,7 +34,7 @@ struct Rec {
     timer: bool,
     frames: bool,
     work_calls: Vec<bool>,
-    bursts: Vec<(Rect, Rect)>,
+    pub(crate) bursts: Vec<(Rect, Rect)>,
     os_dark: bool,
     creates: u32,
     /// The last restack order, bottom to top.
@@ -45,7 +45,7 @@ struct Rec {
 }
 
 impl Rec {
-    fn new(scale: f64) -> Rec {
+    pub(crate) fn new(scale: f64) -> Rec {
         Rec {
             work: Rect {
                 l: 0,

@@ -10,6 +10,24 @@ readme = "README.md"
 
 [lib]
 name = "toast"
+
+# The command-line program (`rust-toast`, PROTOCOL.md) for apps not written
+# in Rust. Behind the `cli` feature, so the library pulls in nothing new:
+# `cargo build --release --features cli`.
+[[bin]]
+name = "rust-toast"
+path = "src/bin/rust-toast.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["dep:serde", "dep:serde_json", "dep:png", "dep:zune-jpeg"]
+
+[dependencies]
+serde = { version = "1.0.219", features = ["derive"], optional = true }
+serde_json = { version = "1.0.140", optional = true }
+png = { version = "0.17.16", optional = true }
+zune-jpeg = { version = "0.4.14", optional = true }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
