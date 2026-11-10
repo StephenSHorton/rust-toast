@@ -24,7 +24,7 @@ v0.2.0. It grew up inside Irori and is shared by suzuri and other apps.
 
 ```toml
 [dependencies]
-rust-toast = { git = "https://github.com/StephenSHorton/rust-toast", tag = "v0.1.0" }
+rust-toast = { git = "https://github.com/StephenSHorton/rust-toast", tag = "v0.2.0" }
 ```
 
 ```rust
@@ -50,6 +50,8 @@ toast::post(Note {
   volume, confetti.
 - `Config::capture_exclude` (on by default) keeps cards out of screenshots
   and screen recordings.
+- `Config::stripe` (on by default) draws the kind-coloured bar down the
+  card's left edge; off, the icon alone carries the colour.
 
 Try it: `cargo run --example demo`.
 

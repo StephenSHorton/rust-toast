@@ -54,6 +54,8 @@ pub struct Look {
     /// Real glass: the palette's tint at this opacity over the blurred
     /// desktop. `None` is a solid card (and the fallback without blur).
     pub glass: Option<f64>,
+    /// Draw the kind-coloured stripe on the left ([`crate::Config::stripe`]).
+    pub stripe: bool,
     /// The part under the cursor.
     pub hot: Part,
     /// The cursor is over this card.
@@ -650,6 +652,7 @@ fn look(cw: &CardWin) -> Look {
         palette: cw.cfg.palette(cw.dark),
         dark: cw.dark,
         glass: cw.cfg.glass_alpha(),
+        stripe: cw.cfg.stripe,
         hot: cw.hot,
         hovered: cw.hovered,
         clickable: cw.clickable,

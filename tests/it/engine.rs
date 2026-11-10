@@ -635,3 +635,24 @@ fn system_scheme_follows_the_os() {
     assert_eq!(l.palette, DARK.resolved());
     assert_eq!(s.creates, 1);
 }
+
+#[test]
+fn the_stripe_is_on_by_default_and_configurable() {
+    for (stripe, want) in [(None, true), (Some(false), false)] {
+        let e = Engine::new();
+        let mut cfg = Config {
+            app_name: "Demo".into(),
+            ..Config::default()
+        };
+        if let Some(on) = stripe {
+            cfg.stripe = on;
+        }
+        e.configure(cfg);
+        let mut s = Rec::new(1.0);
+        let t0 = Instant::now();
+        e.post(note("x"), t0);
+        e.sync(&mut s, t0);
+        let look = s.wins.values().next().and_then(|w| w.look.clone()).expect("drawn");
+        assert_eq!(look.stripe, want);
+    }
+}

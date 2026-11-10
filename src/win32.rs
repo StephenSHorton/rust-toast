@@ -1444,11 +1444,15 @@ fn draw_card(dc: HDC, cw: &Look, pass: Option<Color>) {
     }
     if cw.radius <= 0 {
         frame(dc, all, pal.border);
-        fill(dc, stripe, accent);
+        if cw.stripe {
+            fill(dc, stripe, accent);
+        }
     } else {
         // The window's corners clip the card; a rounded card's stripe is
         // an inset pill (layout::stripe_rect).
-        boxed(dc, stripe, accent, accent, sradius);
+        if cw.stripe {
+            boxed(dc, stripe, accent, accent, sradius);
+        }
         if !glass {
             boxed(dc, all, Color(0), pal.border, cw.radius);
         }

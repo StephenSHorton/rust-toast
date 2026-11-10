@@ -285,10 +285,14 @@ pub struct Config {
     /// Keeps the cards out of screenshots and recordings
     /// (WDA_EXCLUDEFROMCAPTURE, NSWindowSharingNone).
     pub capture_exclude: bool,
+    /// The kind-coloured bar down the card's left edge. Off, the icon alone
+    /// carries the kind's colour.
+    pub stripe: bool,
 }
 
 impl Default for Config {
-    /// App name "Toast", Dark, square, solid, excluded from capture.
+    /// App name "Toast", Dark, square, solid, excluded from capture, with
+    /// the stripe.
     fn default() -> Self {
         Config {
             app_name: "Toast".into(),
@@ -299,6 +303,7 @@ impl Default for Config {
             corner_radius: 0.0,
             glass: 1.0,
             capture_exclude: true,
+            stripe: true,
         }
     }
 }

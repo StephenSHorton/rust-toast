@@ -933,15 +933,17 @@ fn draw_card(all: NSRect, l: &Look, glass: Option<f64>) {
         c.saveGraphicsState();
     }
     shape.addClip();
-    accent.setFill();
-    // A rounded card's stripe is an inset pill (layout::stripe_rect).
-    let (sr, sradius) = stripe_rect(h as i32, l.radius, 1.0);
-    NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
-        ns_rect(sr),
-        sradius as f64,
-        sradius as f64,
-    )
-    .fill();
+    if l.stripe {
+        accent.setFill();
+        // A rounded card's stripe is an inset pill (layout::stripe_rect).
+        let (sr, sradius) = stripe_rect(h as i32, l.radius, 1.0);
+        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+            ns_rect(sr),
+            sradius as f64,
+            sradius as f64,
+        )
+        .fill();
+    }
     if let Some(c) = &ctx {
         c.restoreGraphicsState();
     }
