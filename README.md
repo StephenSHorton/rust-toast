@@ -7,6 +7,8 @@ confetti on good news.
 
 ![A card on Windows](test-card-windows.png)
 
+Website, with a live demo of the motion: <https://stephenshorton.github.io/rust-toast/>
+
 They are custom-drawn windows, not the OS notification centre:
 
 - **Windows:** layered, topmost, `WS_EX_NOACTIVATE` tool windows on one
