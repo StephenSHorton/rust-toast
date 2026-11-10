@@ -1515,7 +1515,9 @@ fn bgrx_over(img: &Image, bg: Color) -> Vec<u8> {
     let (br, bgg, bb) = bg.rgb();
     let mix = |c: u8, b: u8, a: u32| ((c as u32 * a + b as u32 * (255 - a) + 127) / 255) as u8;
     img.rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|p| {
             let a = p[3] as u32;
             [mix(p[2], bb, a), mix(p[1], bgg, a), mix(p[0], br, a), 255]
