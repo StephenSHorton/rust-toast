@@ -87,6 +87,7 @@ h1 { margin: 0; font-size: clamp(34px, 6vw, 56px); line-height: 1.05; font-weigh
     var(--desk);
 }
 .desk .hint { position: absolute; inset: 0; display: grid; place-items: center; color: var(--faint); font-size: 13px; pointer-events: none; text-align: center; padding: 24px; }
+.desk .hint[hidden] { display: none; }
 .stack { position: absolute; width: min(340px, calc(100% - 32px)); }
 .stack[data-corner="br"] { right: 16px; bottom: 16px; }
 .stack[data-corner="bl"] { left: 16px; bottom: 16px; }
@@ -120,7 +121,7 @@ h1 { margin: 0; font-size: clamp(34px, 6vw, 56px); line-height: 1.05; font-weigh
 
 /* The folded-count badge: in the desk's top-right, or its bottom-right when
    the cards are in a top corner, so it never sits on them. */
-.desk .more { position: absolute; right: 14px; top: 12px; font: 12px var(--mono); color: var(--muted); background: #00000055; border: 1px solid #2a2d31; padding: 2px 8px; border-radius: 999px; }
+.desk .more { position: absolute; right: 14px; top: 12px; font: 12px var(--mono); color: var(--muted); background: #00000055; border: 1px solid #2a2d31; padding: 2px 8px; border-radius: 999px; max-width: calc(100% - 28px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stack[data-corner^="t"] ~ .more { top: auto; bottom: 12px; }
 
 /* Gesture threshold overlay: only with ?debug in the URL. */
@@ -230,7 +231,7 @@ footer a { color: var(--muted); }
 
 <section class="part" id="features" aria-labelledby="h-features">
   <h2 id="h-features">What it does</h2>
-  <p class="intro">Everything the demo shows, one line each.</p>
+  <p class="intro">One line each.</p>
   <ul class="features">
     <li><b>Stacks in a corner</b>Any of the four corners of the screen the pointer is on, over every window.</li>
     <li><b>Never takes focus</b>Cards don't activate: whatever you were typing into keeps the keyboard.</li>
@@ -238,7 +239,7 @@ footer a { color: var(--muted); }
     <li><b>Hover to open</b>Hovering opens the whole stack into one list and pauses every timer.</li>
     <li><b>Scroll and drag through many</b>When more are up than fit, the wheel or a vertical drag moves through them one card at a time, with a deck at each end.</li>
     <li><b>Drag to dismiss</b>Throw a card sideways or flick it. The stack stays open a moment so you can throw the next one.</li>
-    <li><b>Buttons</b>Action and confirm cards carry up to two buttons and stay until answered; the answer runs your callback.</li>
+    <li><b>Buttons</b>Action and confirm cards carry up to two buttons; made <code>sticky</code>, they stay until answered. The answer runs your callback.</li>
     <li><b>Sounds</b>One for success, one for failure, one for cards that ask something. On, off and volume are the user's setting.</li>
     <li><b>Confetti on success</b>An optional burst from success cards, skipped when the OS asks for reduced motion.</li>
     <li><b>Light, dark, glass</b>Two palettes you can override, or follow the OS. Real glass: acrylic on Windows 11, a visual effect view on macOS.</li>
@@ -284,7 +285,7 @@ toast::post(Note {
 
 <section class="part" id="motion" aria-labelledby="h-motion">
   <h2 id="h-motion">Motion settings</h2>
-  <p class="intro">The timings and thresholds in the demo are settings, not fixed: how many cards show in full before the rest fold, how far folded cards peek out, how far a drag travels before it picks an axis and before it dismisses, how fast a flick has to be, and how long the stack stays open after a throw. The demo runs the defaults; the crate docs list their names.</p>
+  <p class="intro">The timings and thresholds in the demo are settings, not fixed: how many cards show in full before the rest fold, how far folded cards peek out, how far a drag travels before it picks an axis and before it dismisses, how fast a flick has to be, and how long the stack stays open after a throw. The demo uses the values the motion was designed with.</p>
 </section>
 
 <section class="part" id="platforms" aria-labelledby="h-platforms">
