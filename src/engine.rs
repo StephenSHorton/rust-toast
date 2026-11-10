@@ -822,6 +822,17 @@ impl Engine {
         let mut click = None;
         let mut throw = None;
         match ev {
+            Mouse::Move if !dragging && !ui.bounds.has(sx, sy) => {
+                // A card passing under a still cursor off the stack (one
+                // sliding in from the edge, Windows sends it a move): not
+                // the person coming onto the stack, so it neither opens
+                // nor hovers.
+                if ui.hover_key == key {
+                    new_hover = 0;
+                    let cw = ui.wins.get_mut(&key).expect("checked above");
+                    cw.hot = Part::None;
+                }
+            }
             Mouse::Move => {
                 new_hover = key;
                 ui.enter(now);

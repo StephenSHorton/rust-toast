@@ -1536,3 +1536,156 @@ fn the_stripe_is_on_by_default_and_configurable() {
         assert_eq!(look.stripe, want);
     }
 }
+
+// ---- review additions: timers and hooks stop, Cancel, both clamps, a card
+// sliding under a still cursor ----
+
+#[test]
+fn the_frames_and_the_wheel_hook_stop_after_the_throw_hold() {
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let (e, k, _rx) = dismissable(5, &mut s, t0);
+    let t = t0 + SETTLE;
+    e.mouse(&mut s, k[4], Mouse::Move, 10, 10, t);
+    e.frame(&mut s, t + SETTLE);
+    let t = t + SETTLE;
+    let start = s.at(k[4]);
+    let t = drag(&e, &mut s, k[4], &[(40, 0), (150, 0)], ms(200), t);
+    s.cursor = Some((start.0 + 210, start.1 + 20));
+    assert!(release(&e, &mut s, k[4], 150, 0, start, t));
+    e.sync(&mut s, t);
+    assert!(s.frames && s.hovered, "held open");
+    e.frame(&mut s, t + ms(1200));
+    e.frame(&mut s, t + ms(1200) + SETTLE);
+    assert!(!e.is_open());
+    assert!(!s.frames && !s.hovered, "at rest: no frames, no hook");
+}
+
+#[test]
+fn throwing_the_only_card_leaves_nothing_running() {
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let (e, k, rx) = dismissable(1, &mut s, t0);
+    let t = t0 + SETTLE;
+    e.mouse(&mut s, k[0], Mouse::Move, 10, 10, t);
+    assert!(e.is_open() && s.hovered);
+    let start = s.at(k[0]);
+    let t = drag(&e, &mut s, k[0], &[(15, 0), (30, 0)], ms(10), t);
+    s.cursor = Some((start.0 + 90, start.1 + 20));
+    assert!(release(&e, &mut s, k[0], 30, 0, start, t));
+    assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
+    e.sync(&mut s, t);
+    e.frame(&mut s, t + SETTLE);
+    e.frame(&mut s, t + SETTLE * 2);
+    assert!(s.wins.is_empty(), "the window is gone");
+    assert!(!e.is_open());
+    assert!(!s.frames && !s.hovered && !s.timer);
+}
+
+#[test]
+fn a_cancelled_drag_springs_back_without_a_dismiss() {
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let (e, k, rx) = dismissable(2, &mut s, t0);
+    let t = t0 + SETTLE;
+    e.mouse(&mut s, k[1], Mouse::Move, 10, 10, t);
+    e.frame(&mut s, t + SETTLE);
+    let t = t + SETTLE;
+    let start = s.at(k[1]);
+    let t = drag(&e, &mut s, k[1], &[(40, 0), (150, 0)], ms(200), t);
+    // The capture is taken away mid-drag, past the throw line.
+    assert!(!e.mouse(&mut s, k[1], Mouse::Cancel, 0, 0, t));
+    e.frame(&mut s, t + SETTLE);
+    assert_eq!(s.at(k[1]), start, "back in its slot");
+    assert!(rx.try_recv().is_err(), "not thrown");
+    assert_eq!(e.keys(), k);
+    // The Up that follows a cancel is no click either.
+    let (x, y) = s.local(k[1], start.0 + 60, start.1 + 20);
+    assert!(!e.mouse(&mut s, k[1], Mouse::Up, x, y, t + SETTLE));
+    // And the stack still folds when the cursor leaves.
+    s.cursor = Some((0, 0));
+    e.mouse(&mut s, k[1], Mouse::Leave, 0, 0, t + SETTLE);
+    assert!(!e.is_open());
+}
+
+#[test]
+fn an_up_then_its_capture_cancel_clicks_once() {
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let (e, k, rx) = dismissable(1, &mut s, t0);
+    let t = t0 + SETTLE;
+    e.mouse(&mut s, k[0], Mouse::Down, 60, 20, t);
+    assert!(e.mouse(&mut s, k[0], Mouse::Up, 60, 20, t));
+    // Win32's ReleaseCapture after the Up sends WM_CAPTURECHANGED.
+    assert!(!e.mouse(&mut s, k[0], Mouse::Cancel, 0, 0, t));
+    assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
+    assert!(rx.recv_timeout(ms(200)).is_err(), "once");
+}
+
+#[test]
+fn the_wheel_clamps_at_the_oldest_end_too() {
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let (e, k) = crowded(CORNER_BOTTOM_RIGHT, &mut s, t0);
+    let mut t = t0 + SETTLE;
+    e.mouse(&mut s, k[11], Mouse::Move, 10, 10, t);
+    assert_eq!(e.scroll(), Some((8, 8)));
+    for want in (0..8).rev() {
+        t += ms(100);
+        assert!(e.wheel(&mut s, Wheel::Down, t));
+        assert_eq!(e.scroll(), Some((want, 8)));
+    }
+    assert!(
+        !e.wheel(&mut s, Wheel::Down, t + ms(100)),
+        "clamped at the oldest"
+    );
+    e.frame(&mut s, t + SETTLE);
+    let folded: Vec<bool> = k.iter().map(|x| e.slot(*x).unwrap().1).collect();
+    assert!(!folded[0], "the oldest in full, no corner deck");
+    for x in &k {
+        assert!(inside(rect_of(&s, *x), s.work), "on screen");
+    }
+}
+
+#[test]
+fn in_a_top_corner_dragging_down_goes_older() {
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let (e, k) = crowded(CORNER_TOP_RIGHT, &mut s, t0);
+    let t = t0 + SETTLE;
+    e.mouse(&mut s, k[11], Mouse::Move, 10, 10, t);
+    e.frame(&mut s, t + SETTLE);
+    let t = t + SETTLE;
+    assert_eq!(e.scroll(), Some((8, 8)));
+    // Down the screen in a top corner pulls the corner end into view.
+    drag(&e, &mut s, k[10], &[(0, 13), (0, 50)], ms(50), t);
+    assert_eq!(e.scroll(), Some((7, 8)));
+}
+
+#[test]
+fn a_card_sliding_under_a_still_cursor_off_the_stack_does_not_open_it() {
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let (e, k) = stack(2, CORNER_BOTTOM_RIGHT, &mut s, t0);
+    let t = t0 + SETTLE;
+    // The cursor rests in the margin right of the stack.
+    let r = rect_of(&s, k[1]);
+    let (cx, cy) = (r.r + 10, r.b - 70);
+    s.cursor = Some((cx, cy));
+    e.post(
+        Note {
+            sticky: true,
+            ..note("new")
+        },
+        t,
+    );
+    e.sync(&mut s, t);
+    let n = *e.keys().last().unwrap();
+    e.frame(&mut s, t + ms(30));
+    let at = rect_of(&s, n);
+    assert!(at.has(cx, cy), "the new card is under the cursor mid-slide");
+    // Windows' move for a window passing under a still cursor.
+    e.mouse(&mut s, n, Mouse::Move, cx - at.l, cy - at.t, t + ms(30));
+    assert!(!e.is_open(), "off the stack: stays folded");
+    assert!(!s.hovered);
+}

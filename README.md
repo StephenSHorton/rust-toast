@@ -52,6 +52,9 @@ toast::post(Note {
   and screen recordings.
 - `Config::stripe` (on by default) draws the kind-coloured bar down the
   card's left edge; off, the icon alone carries the colour.
+- `Config::motion` (`toast::Motion`) tunes the stack: past three cards the
+  older ones fold into a deck in the corner, hovering opens it, a sideways
+  drag throws a card away, and everything animates (see [Motion](#motion)).
 
 Try it: `cargo run --example demo` (`cargo run --example demo 20 6` keeps
 it up 20 s with six cards, enough to fold a deck).
