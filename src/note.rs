@@ -102,8 +102,8 @@ pub struct Note {
     pub actions: Vec<Action>,
     /// A left click on the body. Without it a body click is a dismiss.
     pub on_click: Option<Callback>,
-    /// The person dismissed it (right click, the x, or a body click with no
-    /// `on_click`). Not when it expires, is replaced, pushed off a full
+    /// The person dismissed it (right click, the x, a body click with no
+    /// `on_click`, or a sideways drag that threw it away). Not when it expires, is replaced, pushed off a full
     /// stack, or closed with [`crate::close`].
     pub on_dismiss: Option<Callback>,
 }
@@ -179,6 +179,7 @@ impl Options {
     }
 }
 
+/// The default most cards up at once ([`crate::Motion::max_cards`]).
 pub const MAX_CARDS: usize = 5;
 pub const MAX_ACTIONS: usize = 2;
 pub const FADE_IN: Duration = Duration::from_millis(140);
@@ -255,6 +256,9 @@ impl Card {
 #[derive(Debug, Default)]
 pub struct Stack {
     pub cards: Vec<Card>,
+    /// The most cards up at once ([`crate::Motion::max_cards`]); 0 is
+    /// [`MAX_CARDS`].
+    pub max: usize,
     next: u64,
 }
 
@@ -275,7 +279,8 @@ impl Stack {
             return (c.key, None);
         }
         let mut dropped = None;
-        if self.cards.len() >= MAX_CARDS {
+        let max = if self.max == 0 { MAX_CARDS } else { self.max };
+        while self.cards.len() >= max {
             let i = self.cards.iter().position(|c| !c.note.sticky).unwrap_or(0);
             dropped = Some(self.cards.remove(i));
         }

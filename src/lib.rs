@@ -14,6 +14,12 @@
 //! Set the look once with [`configure`] (start from [`Config::default`]),
 //! apply the person's settings with [`set_options`], then [`post`].
 //!
+//! The stack is a list with a deck in the corner ([`Motion`]): oldest at
+//! the corner, newest farthest out, older cards folded into a deck at rest;
+//! hovering opens it (the wheel moves through a stack too tall for the
+//! screen), a sideways drag throws a card away, and every change animates
+//! unless the OS asks for reduced motion.
+//!
 //! The model ([`note`], [`layout`], [`config`], [`sound`]) and the window
 //! sync ([`engine`]) are OS-agnostic, so tests drive the engine headless
 //! with a recording [`engine::Surface`].
@@ -42,8 +48,8 @@ mod darwin;
 use std::sync::LazyLock;
 use std::time::Instant;
 
-pub use config::{Accents, Color, Config, DARK, Kind, LIGHT, Palette, Scheme, hex, rgb};
-pub use engine::{Engine, Look, Mouse, Surface};
+pub use config::{Accents, Color, Config, DARK, Kind, LIGHT, Motion, Palette, Scheme, hex, rgb};
+pub use engine::{Engine, Look, Mouse, Surface, Wheel};
 pub use note::{
     Action, CORNER_BOTTOM_LEFT, CORNER_BOTTOM_RIGHT, CORNER_TOP_LEFT, CORNER_TOP_RIGHT, Callback,
     Image, Note, Options,

@@ -250,34 +250,104 @@ fn options_normalized() {
     assert_eq!(o.volume, 0.0);
 }
 
+fn spec(corner: &str) -> StackSpec<'_> {
+    StackSpec {
+        work: Rect {
+            l: 0,
+            t: 40,
+            r: 1000,
+            b: 800,
+        },
+        corner,
+        w: 300,
+        gap: 8,
+        margin: 20,
+        shown: 3,
+        peek: 12,
+        depth: 2,
+        shrink: 0.05,
+        fade: 0.22,
+    }
+}
+
+fn top_left(s: &Slot) -> Point {
+    let r = s.pose.rect();
+    Point { x: r.l, y: r.t }
+}
+
 #[test]
-fn stack_origins_newest_nearest_corner() {
-    let work = Rect {
-        l: 0,
-        t: 40,
-        r: 1000,
-        b: 800,
-    };
+fn arrange_runs_oldest_at_the_corner_to_newest_farthest_out() {
     let heights = [60, 80]; // oldest, newest
-    let (w, gap, margin) = (300, 8, 20);
     let p = |x, y| Point { x, y };
     for (corner, old, newest) in [
-        (CORNER_TOP_RIGHT, p(680, 40 + 20 + 80 + 8), p(680, 60)),
-        (CORNER_TOP_LEFT, p(20, 40 + 20 + 80 + 8), p(20, 60)),
+        (CORNER_TOP_RIGHT, p(680, 60), p(680, 60 + 60 + 8)),
+        (CORNER_TOP_LEFT, p(20, 60), p(20, 60 + 60 + 8)),
         (
             CORNER_BOTTOM_RIGHT,
-            p(680, 800 - 20 - 80 - 8 - 60),
-            p(680, 800 - 20 - 80),
+            p(680, 800 - 20 - 60),
+            p(680, 800 - 20 - 60 - 8 - 80),
         ),
         (
             CORNER_BOTTOM_LEFT,
-            p(20, 800 - 20 - 80 - 8 - 60),
-            p(20, 800 - 20 - 80),
+            p(20, 800 - 20 - 60),
+            p(20, 800 - 20 - 60 - 8 - 80),
         ),
     ] {
-        let got = stack_origins(work, corner, w, &heights, gap, margin);
-        assert_eq!(got, vec![old, newest], "{corner}");
+        for open in [false, true] {
+            let a = arrange(&spec(corner), &heights, open, None);
+            let got: Vec<Point> = a.slots.iter().map(top_left).collect();
+            assert_eq!(got, vec![old, newest], "{corner} open {open}");
+            assert!(a.slots.iter().all(|s| !s.folded && s.scale == 1.0));
+            assert_eq!((a.lower, a.upper, a.at), (0, 0, None));
+        }
     }
+}
+
+#[test]
+fn arrange_folds_all_but_the_newest_shown_at_rest() {
+    let heights = [50, 50, 50, 50, 50, 60]; // a taller newest
+    let a = arrange(&spec(CORNER_BOTTOM_LEFT), &heights, false, None);
+    assert_eq!((a.lower, a.upper), (3, 0));
+    let folded: Vec<bool> = a.slots.iter().map(|s| s.folded).collect();
+    assert_eq!(folded, [true, true, false, false, false, false]);
+    // The deck's front (index 2) sits two peeks up; behind it, each step
+    // back is smaller, fainter and nearer the corner.
+    assert_eq!(a.slots[2].pose.rect().b, 800 - 20 - 24);
+    assert_eq!((a.slots[1].scale, a.slots[0].scale), (0.95, 0.9));
+    assert!((a.slots[1].pose.o - 0.78).abs() < 1e-9);
+    assert!((a.slots[0].pose.o - 0.56).abs() < 1e-9);
+    assert!(a.slots[0].pose.rect().b > a.slots[1].pose.rect().b);
+    assert!(a.slots[0].z < a.slots[1].z && a.slots[1].z < a.slots[2].z);
+    assert!(
+        a.slots[2].z < a.slots[3].z,
+        "the deck under the shown cards"
+    );
+    // The first shown card past the deck: 24 + 50 + 8 from the corner.
+    assert_eq!(a.slots[3].pose.rect().b, 800 - 20 - 82);
+    // The back card shrinks toward the front, inside the margin.
+    let b = bounds(&a.slots).b;
+    assert!(b > 800 - 20 - 12 && b <= 800 - 20, "{b}");
+}
+
+#[test]
+fn arrange_open_with_too_many_keeps_both_decks_on_screen() {
+    let heights = [44; 20];
+    let mut sp = spec(CORNER_TOP_RIGHT);
+    sp.work.b = 440; // room 360
+    let a = arrange(&sp, &heights, true, None);
+    assert_eq!((a.at, a.max_at, a.lower, a.upper), (Some(16), 16, 16, 0));
+    let a = arrange(&sp, &heights, true, Some(5));
+    assert_eq!((a.lower, a.upper), (5, 11));
+    let r = bounds(&a.slots);
+    assert!(r.t >= 60 && r.b <= 420, "{r:?}");
+    // The far deck's front is its oldest card; the next peeks beyond it.
+    assert!(!a.slots[9].folded && a.slots[10].folded);
+    assert!(a.slots[10].pose.rect().b > a.slots[9].pose.rect().b);
+    assert_eq!(
+        arrange(&sp, &heights, true, Some(99)).at,
+        Some(16),
+        "clamped"
+    );
 }
 
 #[test]

@@ -1,7 +1,10 @@
 # toast on macOS: what the Mac must compile and check
 
 `src/darwin.rs` (the AppKit cards) was written on the PC against the objc2
-sources in the cargo registry; it builds and passes clippy on the Mac. Everything else
+sources in the cargo registry; it builds and passes clippy on the Mac, and
+since 0.3.0 the PC type-checks it too (`rustup target add
+aarch64-apple-darwin`, then `cargo clippy --target aarch64-apple-darwin
+--all-targets -- -D warnings`). Everything else
 in the crate (model, layout, sounds, the shared `Engine` the Win32 side
 also drives) is platform-neutral and tested on the PC.
 
@@ -83,6 +86,76 @@ which is when cards are up) queues syncs so cards flip at once.
 Check it: with a card up, flip System Settings > Appearance while the
 config's scheme is `System`: the card follows within a second (checked on
 macOS 26.6 in Irori).
+
+## 2c. Motion (0.3.0: list + deck)
+
+The motion model lives in the shared engine and is tested headless on the
+PC; `darwin.rs` only gives it windows. As of 0.3.0 the crate type-checks
+for macOS from the PC (`cargo clippy --target aarch64-apple-darwin
+--all-targets -- -D warnings` is clean), so the objc2 names and signatures
+below compile; what nobody has seen yet is how they behave. The new or
+changed AppKit calls, each only compiled, never run:
+
+- `MacSurface::place` now runs every frame (60 Hz) while a card moves:
+  `setFrame_display(frame, resized)` (display only when the size changed)
+  plus `invalidateShadow` on a resize. A deck's peeking cards are smaller
+  panels (scaled 0.95, 0.90), not a layer transform.
+- `MacSurface::restack`: `orderFrontRegardless` on each shown panel,
+  bottom to top, whenever the stacking order changes (the deck under the
+  shown cards, a dragged card on top, a thrown one over everything).
+- `MacSurface::frames`: a second repeating `NSTimer` (16 ms, common modes)
+  calling `Engine::frame`; `timer` and `frames` share `repeating()`.
+- `MacSurface::cursor`: `NSEvent::mouseLocation()` flipped to top-down
+  against the primary screen's height. The frames poll it while the stack
+  is open to see the cursor leave the stack (cards are separate panels
+  with gaps, so a per-panel `mouseExited:` alone would fold it between
+  cards).
+- `MacSurface::reduce_motion`:
+  `NSWorkspace::accessibilityDisplayShouldReduceMotion`, read every sync.
+- `ToastView` `mouseDragged:` sends moves to the engine (AppKit sends a
+  press's drags to the view it started on, even off it: the Mac's
+  capture). The panel moves under the pointer while dragged; check the
+  view's `locationInWindow` stays consistent (the engine adds the
+  panel's current origin).
+- `ToastView` `scrollWheel:` reads `scrollingDeltaY()`: positive is
+  "up" (`Wheel::Up`). Check the direction with natural scrolling both
+  on and off: in a bottom corner, scrolling up should bring newer cards
+  (the ones farther from the corner) into view. Flip the sign in
+  `scroll_wheel` if it's backwards. A trackpad sends a stream of
+  deltas; the engine's 90 ms debounce makes it one card per gesture
+  step, which may feel slow or fast on a trackpad.
+- `draw_card` draws only the body (fill and border) for a `folded`
+  look. A card mid-way between sizes draws its content at full size
+  clipped by the smaller panel (the Win32 side draws it scaled); that
+  lasts only while a card folds or unfolds.
+
+Check by hand with `cargo run --example demo 30 7` (seven cards, 30 s):
+
+- the first cards slide in from the screen edge (right side for a right
+  corner), the newest lands farthest from the corner;
+- past three, the older cards fold into a deck in the corner: the
+  newest folded one in front in full, two slivers peeking toward the
+  corner behind it, smaller and fainter;
+- hovering anywhere on the stack opens every card into one column,
+  oldest at the corner; moving the cursor between two cards (over the
+  gap) keeps it open; leaving folds it at once;
+- dragging a card sideways makes it follow and fade; released past
+  about 110 pt or flicked it flies off and the demo prints
+  `threw card N`; short of that it springs back; a press that moved is
+  never a click;
+- after a throw, moving off the stack keeps it open about 1.2 s;
+  coming back within that keeps it open;
+- with System Settings > Accessibility > Display > Reduce motion on,
+  cards jump into place with no sliding;
+- nothing steals focus during any of it (the checks in section 2);
+- on a short screen (or `Motion { max_cards: 20, .. }` and many cards)
+  the open stack shows a deck at each end and the wheel or a vertical
+  drag moves through it one card at a time.
+
+Watch for re-entrancy: the engine calls the surface while it holds its
+window-state lock. If AppKit ever delivers a mouse event synchronously
+inside `setFrame_display` or `orderFrontRegardless` (it shouldn't; events
+are queued), the main thread would deadlock on that lock.
 
 ## 3. Port the darwin smoke test
 

@@ -1,6 +1,7 @@
 //! Colors, palettes and the app-level setup (go-toast config.go).
 
 use std::fmt;
+use std::time::Duration;
 
 /// An sRGB color made with [`rgb`] or [`hex`]. The zero `Color` is "unset"
 /// (a palette fills it in), so black is `rgb(0, 0, 0)`, not `Color(0)`.
@@ -288,6 +289,9 @@ pub struct Config {
     /// The kind-coloured bar down the card's left edge. Off, the icon alone
     /// carries the kind's colour.
     pub stripe: bool,
+    /// How the stack folds, opens and moves ([`Motion::default`] is the
+    /// designed feel).
+    pub motion: Motion,
 }
 
 impl Default for Config {
@@ -304,6 +308,7 @@ impl Default for Config {
             glass: 1.0,
             capture_exclude: true,
             stripe: true,
+            motion: Motion::default(),
         }
     }
 }
@@ -334,6 +339,7 @@ impl Config {
         if !(self.glass > 0.0 && self.glass < 1.0) {
             self.glass = 1.0;
         }
+        self.motion = self.motion.normalized();
         self
     }
 
@@ -371,6 +377,160 @@ impl Config {
             return "toast: ".into();
         }
         format!("{a}: toast: ")
+    }
+}
+
+/// A cubic-bezier easing curve, as CSS writes it: `[x1, y1, x2, y2]`.
+pub type Ease = [f64; 4];
+
+/// How the stack moves: the "list + deck" model. The cards run in one
+/// column from the corner out, oldest at the corner and newest farthest
+/// out. At rest the newest [`shown`](Motion::shown) are in full and the
+/// older ones fold into a deck that stays in the corner. Hovering opens the
+/// stack (with a deck at each end and the wheel or a vertical drag moving
+/// through when it doesn't fit the screen); leaving folds it again. A card
+/// dragged sideways is thrown away.
+///
+/// Distances are in dip, speeds in dip per millisecond, fractions 0..1.
+/// The OS's reduce-motion setting turns every animation into a jump.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Motion {
+    /// Cards shown in full at rest; older ones fold into the corner deck.
+    pub shown: usize,
+    /// The most cards up at once: a post past it pushes the oldest
+    /// non-sticky card off.
+    pub max_cards: usize,
+    /// How far each card behind a deck's front card peeks out.
+    pub peek: f64,
+    /// How many cards peek out behind a deck's front card.
+    pub peek_depth: usize,
+    /// Each step back in a deck is this much smaller (a fraction of full)...
+    pub peek_shrink: f64,
+    /// ...and this much more transparent.
+    pub peek_fade: f64,
+    /// The drag distance that decides a drag's axis, once, for the whole drag.
+    pub lock: f64,
+    /// Released past this far sideways, a dragged card is thrown away.
+    pub dismiss_distance: f64,
+    /// Released faster than this sideways, it is thrown away regardless.
+    pub flick_speed: f64,
+    /// A card dragged sideways fades over this distance...
+    pub drag_fade: f64,
+    /// ...down to this opacity.
+    pub drag_min_opacity: f64,
+    /// Vertical drag per card scrolled, while the open stack has hidden cards.
+    pub scroll_step: f64,
+    /// A vertical drag with nothing to scroll moves the card this fraction
+    /// of the drag, then springs back.
+    pub rubber_band: f64,
+    /// Wheel notches closer together than this move one card, not several.
+    pub wheel_debounce: Duration,
+    /// After a card is thrown away, leaving the stack folds it only this
+    /// long after the throw (time to come back for the next one).
+    pub after_throw: Duration,
+    /// Every move, fold, open and fade.
+    pub duration: Duration,
+    /// A card leaving takes this fraction of `duration`.
+    pub exit: f64,
+    /// Position and size: fast out, a slight overshoot, soft landing.
+    pub ease: Ease,
+    /// Opacity and leaving cards: no overshoot.
+    pub ease_out: Ease,
+    /// A new card slides in from this far toward the screen edge...
+    pub enter_offset: f64,
+    /// ...from this size (a fraction of full), and transparent.
+    pub enter_scale: f64,
+    /// A card closing slides this far toward the edge as it fades.
+    pub leave_offset: f64,
+    /// A thrown card flies this far.
+    pub throw_offset: f64,
+}
+
+impl Default for Motion {
+    /// The feel designed in the motion lab: 3 shown, at most 5 up, 12 dip
+    /// peeks two deep, 420 ms springy moves.
+    fn default() -> Self {
+        Motion {
+            shown: 3,
+            max_cards: 5,
+            peek: 12.0,
+            peek_depth: 2,
+            peek_shrink: 0.05,
+            peek_fade: 0.22,
+            lock: 12.0,
+            dismiss_distance: 110.0,
+            flick_speed: 0.6,
+            drag_fade: 260.0,
+            drag_min_opacity: 0.2,
+            scroll_step: 44.0,
+            rubber_band: 0.15,
+            wheel_debounce: Duration::from_millis(90),
+            after_throw: Duration::from_millis(1200),
+            duration: Duration::from_millis(420),
+            exit: 0.8,
+            ease: [0.2, 0.9, 0.25, 1.15],
+            ease_out: [0.2, 0.8, 0.2, 1.0],
+            enter_offset: 60.0,
+            enter_scale: 0.96,
+            leave_offset: 40.0,
+            throw_offset: 420.0,
+        }
+    }
+}
+
+/// The most cards a deck shows peeking behind its front.
+pub const MAX_PEEK_DEPTH: usize = 8;
+
+impl Motion {
+    /// Snaps hand-edited values to usable ones: counts at least 1, NaN or
+    /// negative distances to their defaults, fractions into 0..1, easing
+    /// x values into 0..1.
+    pub fn normalized(mut self) -> Motion {
+        let d = Motion::default();
+        self.shown = self.shown.max(1);
+        self.max_cards = self.max_cards.max(1);
+        self.peek_depth = self.peek_depth.min(MAX_PEEK_DEPTH);
+        let dist = |v: &mut f64, def: f64| {
+            if !v.is_finite() || *v < 0.0 {
+                *v = def;
+            }
+        };
+        dist(&mut self.peek, d.peek);
+        dist(&mut self.lock, d.lock);
+        dist(&mut self.dismiss_distance, d.dismiss_distance);
+        dist(&mut self.flick_speed, d.flick_speed);
+        dist(&mut self.scroll_step, d.scroll_step);
+        dist(&mut self.enter_offset, d.enter_offset);
+        dist(&mut self.leave_offset, d.leave_offset);
+        dist(&mut self.throw_offset, d.throw_offset);
+        dist(&mut self.drag_fade, d.drag_fade);
+        if self.drag_fade == 0.0 {
+            self.drag_fade = d.drag_fade;
+        }
+        if self.scroll_step == 0.0 {
+            self.scroll_step = d.scroll_step;
+        }
+        let frac = |v: &mut f64, def: f64| {
+            if v.is_finite() {
+                *v = v.clamp(0.0, 1.0);
+            } else {
+                *v = def;
+            }
+        };
+        frac(&mut self.peek_shrink, d.peek_shrink);
+        frac(&mut self.peek_fade, d.peek_fade);
+        frac(&mut self.drag_min_opacity, d.drag_min_opacity);
+        frac(&mut self.rubber_band, d.rubber_band);
+        frac(&mut self.exit, d.exit);
+        frac(&mut self.enter_scale, d.enter_scale);
+        for (e, def) in [(&mut self.ease, d.ease), (&mut self.ease_out, d.ease_out)] {
+            if e.iter().any(|v| !v.is_finite()) {
+                *e = def;
+            }
+            e[0] = e[0].clamp(0.0, 1.0);
+            e[2] = e[2].clamp(0.0, 1.0);
+        }
+        self
     }
 }
 

@@ -34,6 +34,18 @@
 //! the accent shows as additive light (dark text vanishes), so a glass card
 //! is painted through [`paint_glass`], which recovers real alpha. Older
 //! Windows and "Transparency effects" off get the solid card.
+//!
+//! Motion: the engine moves each card window per frame (a 16 ms timer on
+//! the host while anything moves or the stack is open, none at rest) with
+//! `SetWindowPos` and its `LWA_ALPHA` fade, and restacks them explicitly. A
+//! deck's smaller cards are smaller windows drawn at the smaller scale
+//! (crisp; folded ones are a blank body). A press captures the mouse
+//! (`SetCapture`), so a drag keeps its moves off the card;
+//! `WM_CAPTURECHANGED` cancels it. The wheel: with "Scroll inactive windows"
+//! on (Windows 10+'s default) `WM_MOUSEWHEEL` comes to the card under the
+//! cursor though it is never active; with it off (`SPI_GETMOUSEWHEELROUTING`
+//! is focus) a `WH_MOUSE_LL` hook runs only while the stack is open and
+//! takes only the wheel steps over it.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -58,32 +70,36 @@ use windows_sys::Win32::Graphics::Gdi::{
     MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromRect, MonitorFromWindow, NULL_BRUSH,
     PAINTSTRUCT, PS_SOLID, ReleaseDC, RoundRect, SRCCOPY, SelectClipRgn, SelectObject, SetBkMode,
     SetBrushOrgEx, SetStretchBltMode, SetTextColor, SetWindowRgn, StretchDIBits, TRANSPARENT,
+    UpdateWindow,
 };
 use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+    ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
-    GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowRect, HWND_MESSAGE, HWND_TOPMOST,
-    IDC_ARROW, IDC_HAND, KillTimer, LWA_ALPHA, LoadCursorW, MA_NOACTIVATE, MSG, PostMessageW,
-    RegisterClassExW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    SPI_GETCLIENTAREAANIMATION, SPI_SETWORKAREA, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER,
-    SetCursor, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos,
-    ShowWindow, SystemParametersInfoW, TranslateMessage, ULW_ALPHA, UpdateLayeredWindow,
-    WDA_EXCLUDEFROMCAPTURE, WM_APP, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR,
-    WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowRect,
+    HHOOK, HWND_MESSAGE, HWND_TOPMOST, IDC_ARROW, IDC_HAND, KillTimer, LWA_ALPHA, LoadCursorW,
+    MA_NOACTIVATE, MOUSEWHEEL_ROUTING_FOCUS, MOUSEWHEEL_ROUTING_MOUSE_POS, MSG, MSLLHOOKSTRUCT,
+    PostMessageW, RegisterClassExW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SPI_GETCLIENTAREAANIMATION, SPI_GETMOUSEWHEELROUTING, SPI_SETWORKAREA,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursor,
+    SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos,
+    SetWindowsHookExW, ShowWindow, SystemParametersInfoW, TranslateMessage, ULW_ALPHA,
+    UnhookWindowsHookEx, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WH_MOUSE_LL, WM_APP,
+    WM_CAPTURECHANGED, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP,
+    WM_SETCURSOR, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use crate::ENGINE;
 use crate::confetti::{self, Burst};
 use crate::config::{Color, Config, Kind};
-use crate::engine::{Look, Mouse, Surface, TICK_MS};
+use crate::engine::{FRAME_MS, Look, Mouse, Surface, TICK_MS, Wheel};
 use crate::layout::{
     BODY_GAP_DIP, BODY_LINE_DIP, BODY_SIZE_DIP, BUTTON_SIZE_DIP, ICON_LEFT_DIP, ICON_SIZE_DIP,
     PAD_TOP_DIP, Part, Rect, TEXT_LEFT_DIP, TEXT_RIGHT_DIP, TITLE_DIP, TITLE_RIGHT_DIP,
@@ -102,6 +118,11 @@ const WM_BACKDROP: u32 = WM_APP + 3;
 const TIMER_TICK: usize = 1;
 /// The confetti overlay's frames.
 const TIMER_CONFETTI: usize = 2;
+/// The stack's motion frames ([`crate::engine::Engine::frame`]).
+const TIMER_FRAME: usize = 3;
+/// A wheel step the low-level hook caught over the open stack (wParam:
+/// the wheel delta).
+const WM_WHEEL: u32 = WM_APP + 4;
 const CONFETTI_FRAME_MS: u32 = 16;
 /// WM_MOUSELEAVE (in windows-sys' Controls module, which this crate does not
 /// otherwise need).
@@ -260,6 +281,8 @@ struct Win {
     backdrop: Option<Backdrop>,
     /// The fade the engine last set.
     alpha: u8,
+    /// The size last placed (px).
+    size: (i32, i32),
 }
 
 /// What [`apply_backdrop`] gave a window, so a redraw doesn't redo it.
@@ -362,6 +385,14 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             confetti_frame();
             0
         }
+        WM_TIMER if wp == TIMER_FRAME => {
+            ENGINE.frame(&mut Win32Surface, Instant::now());
+            0
+        }
+        WM_WHEEL => {
+            wheel(wp as u16 as i16);
+            0
+        }
         WM_TIMER => {
             ENGINE.tick(Instant::now());
             sync();
@@ -376,6 +407,71 @@ fn post_host(msg: u32) {
     if !hh.is_null() {
         unsafe { PostMessageW(hh, msg, 0, 0) };
     }
+}
+
+/// A wheel delta over the stack (positive: away from the person).
+fn wheel(delta: i16) {
+    if delta != 0 {
+        let dir = if delta > 0 { Wheel::Up } else { Wheel::Down };
+        ENGINE.wheel(&mut Win32Surface, dir, Instant::now());
+    }
+}
+
+thread_local! {
+    /// The low-level mouse hook while the open stack wants the wheel and
+    /// the OS sends it to the focused window instead.
+    static WHEEL_HOOK: Cell<HHOOK> = const { Cell::new(null_mut()) };
+}
+
+/// Whether the OS sends the wheel to the focused window rather than the
+/// one under the cursor ("Scroll inactive windows when I hover over them"
+/// off, or a Windows before 10, which can't say).
+fn wheel_follows_focus() -> bool {
+    let mut routing: u32 = MOUSEWHEEL_ROUTING_FOCUS;
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETMOUSEWHEELROUTING,
+            0,
+            (&mut routing as *mut u32).cast(),
+            0,
+        )
+    } != 0;
+    // Hybrid sends a desktop app's wheel by focus too.
+    !ok || routing != MOUSEWHEEL_ROUTING_MOUSE_POS
+}
+
+/// The low-level mouse hook: a wheel step over the open stack goes to the
+/// stack (and not to the focused app); everything else passes. It runs on
+/// this thread's message loop, so it only posts.
+unsafe extern "system" fn wheel_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if code >= 0 && wp as u32 == WM_MOUSEWHEEL && lp != 0 {
+        // SAFETY: for WM_MOUSEWHEEL a WH_MOUSE_LL lParam is an MSLLHOOKSTRUCT.
+        let info = unsafe { &*(lp as *const MSLLHOOKSTRUCT) };
+        if ENGINE.over_stack(info.pt.x, info.pt.y) {
+            let delta = (info.mouseData >> 16) as u16;
+            let hh = host();
+            if !hh.is_null() {
+                unsafe { PostMessageW(hh, WM_WHEEL, delta as usize, 0) };
+            }
+            return 1;
+        }
+    }
+    unsafe { CallNextHookEx(null_mut(), code, wp, lp) }
+}
+
+/// Reduce Motion: Settings > Accessibility > Visual effects > Animation
+/// effects off turns client-area animation off.
+fn reduce_motion() -> bool {
+    let mut anim: i32 = 1;
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            &mut anim as *mut i32 as *mut core::ffi::c_void,
+            0,
+        )
+    } != 0;
+    ok && anim == 0
 }
 
 unsafe extern "system" fn card_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -405,7 +501,7 @@ unsafe extern "system" fn card_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
     let x = (lp & 0xffff) as u16 as i16 as i32;
     let y = ((lp >> 16) & 0xffff) as u16 as i16 as i32;
     let mouse = |ev: Mouse| {
-        if ENGINE.mouse(&mut Win32Surface, key, ev, x, y) {
+        if ENGINE.mouse(&mut Win32Surface, key, ev, x, y, Instant::now()) {
             post_host(WM_SYNC); // not inside the clicked window's own message
         }
     };
@@ -460,11 +556,29 @@ unsafe extern "system" fn card_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             0
         }
         WM_LBUTTONDOWN => {
+            // Captured, so a drag keeps its moves and its release off the
+            // card (the card follows the pointer, or the press is no click).
+            unsafe { SetCapture(h) };
             mouse(Mouse::Down);
             0
         }
         WM_LBUTTONUP => {
             mouse(Mouse::Up);
+            // Its WM_CAPTURECHANGED finds no drag left to cancel.
+            unsafe { ReleaseCapture() };
+            0
+        }
+        WM_CAPTURECHANGED => {
+            // Taken away mid-press (another window captured): no click.
+            mouse(Mouse::Cancel);
+            0
+        }
+        WM_MOUSEWHEEL => {
+            // With "Scroll inactive windows" on (Windows 10+'s default) the
+            // wheel goes to the window under the cursor, never-activated
+            // cards too. Its lParam is screen coordinates; only the delta
+            // matters.
+            wheel(((wp >> 16) & 0xffff) as u16 as i16);
             0
         }
         WM_RBUTTONUP => {
@@ -643,6 +757,7 @@ impl Surface for Win32Surface {
                     rgn: (0, 0, 0),
                     backdrop: None,
                     alpha: 0,
+                    size: (w, h),
                 },
             )
         });
@@ -703,14 +818,82 @@ impl Surface for Win32Surface {
         })
     }
 
-    fn place(&mut self, key: u64, x: i32, y: i32, w: i32, h: i32, raise: bool, placed: bool) {
+    fn place(&mut self, key: u64, x: i32, y: i32, w: i32, h: i32) {
         let hw = hwnd_of(key);
-        let (mut after, mut flags) = (HWND_TOPMOST, SWP_NOACTIVATE);
-        if placed && !raise {
-            after = null_mut();
-            flags |= SWP_NOZORDER;
+        if hw.is_null() {
+            return;
         }
-        unsafe { SetWindowPos(hw, after, x, y, w, h, flags) };
+        let resized = WINS.with(|m| {
+            let mut m = m.borrow_mut();
+            let win = m.get_mut(&(hw as isize))?;
+            let r = win.size != (w, h);
+            win.size = (w, h);
+            Some(r)
+        });
+        unsafe { SetWindowPos(hw, null_mut(), x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER) };
+        if resized == Some(true) {
+            // Paint the new size now, not a frame late: the engine drew the
+            // look for it just before.
+            unsafe { UpdateWindow(hw) };
+        }
+    }
+
+    fn restack(&mut self, keys: &[u64]) {
+        // Each goes to the top of the topmost band in turn, so the last
+        // ends up in front.
+        for k in keys {
+            let hw = hwnd_of(*k);
+            if !hw.is_null() {
+                unsafe {
+                    SetWindowPos(
+                        hw,
+                        HWND_TOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+                    )
+                };
+            }
+        }
+    }
+
+    fn frames(&mut self, on: bool) {
+        unsafe {
+            if on {
+                SetTimer(host(), TIMER_FRAME, FRAME_MS, None);
+            } else {
+                KillTimer(host(), TIMER_FRAME);
+            }
+        }
+    }
+
+    fn cursor(&mut self) -> Option<(i32, i32)> {
+        let mut p = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+        (unsafe { GetCursorPos(&mut p) } != 0).then_some((p.x, p.y))
+    }
+
+    fn reduce_motion(&mut self) -> bool {
+        reduce_motion()
+    }
+
+    fn hovered(&mut self, open: bool) {
+        // Only when the OS won't send the wheel to the card under the
+        // cursor, and only while the stack is open: a low-level hook sees
+        // every mouse event on the desktop.
+        WHEEL_HOOK.with(|hk| {
+            let have = hk.get();
+            if open && have.is_null() && wheel_follows_focus() {
+                let h = unsafe {
+                    SetWindowsHookExW(WH_MOUSE_LL, Some(wheel_hook), GetModuleHandleW(null()), 0)
+                };
+                hk.set(h);
+            } else if !open && !have.is_null() {
+                unsafe { UnhookWindowsHookEx(have) };
+                hk.set(null_mut());
+            }
+        });
     }
 
     fn alpha(&mut self, key: u64, a: u8) {
@@ -749,18 +932,7 @@ impl Surface for Win32Surface {
     }
 
     fn confetti(&mut self, card: Rect, _work: Rect) {
-        // Client-area animation off is Windows' Reduce Motion
-        // (Settings > Accessibility > Visual effects > Animation effects).
-        let mut anim: i32 = 1;
-        let ok = unsafe {
-            SystemParametersInfoW(
-                SPI_GETCLIENTAREAANIMATION,
-                0,
-                &mut anim as *mut i32 as *mut core::ffi::c_void,
-                0,
-            )
-        } != 0;
-        if ok && anim == 0 {
+        if reduce_motion() {
             return;
         }
         throw_confetti(card);
@@ -1441,6 +1613,18 @@ fn draw_card(dc: HDC, cw: &Look, pass: Option<Color>) {
     };
     if !glass {
         fill(dc, all, pal.background);
+    }
+    if cw.folded {
+        // Behind a deck's front card: the card's body alone, at whatever
+        // size the deck gives it (glass is the accent's body already).
+        if !glass {
+            if cw.radius <= 0 {
+                frame(dc, all, pal.border);
+            } else {
+                boxed(dc, all, Color(0), pal.border, cw.radius);
+            }
+        }
+        return;
     }
     if cw.radius <= 0 {
         frame(dc, all, pal.border);

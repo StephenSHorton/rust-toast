@@ -29,6 +29,14 @@
 //! "Reduce transparency" on) hide the blur and paint the opaque background.
 //! The panel's appearance is Aqua or Dark Aqua to match the card, and with
 //! the "system" scheme the OS's light/dark flip restyles cards on screen.
+//!
+//! Motion (the engine's list + deck): each frame moves and sizes the panels
+//! (`setFrame:display:`, a 16 ms `NSTimer` while anything moves or the stack
+//! is open), fades them (`alphaValue`) and restacks them
+//! (`orderFrontRegardless`, bottom to top). A deck's smaller cards are
+//! smaller panels; folded ones draw only their body. `mouseDragged:` carries
+//! a drag, `scrollWheel:` the wheel, and the cursor's leaving the stack is
+//! read from `NSEvent::mouseLocation`. MAC.md lists what to check.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -65,7 +73,7 @@ use objc2_foundation::{
 use crate::ENGINE;
 use crate::confetti::{self, Burst};
 use crate::config::{Color, Config, Kind};
-use crate::engine::{Look, Mouse, Surface, TICK_MS};
+use crate::engine::{FRAME_MS, Look, Mouse, Surface, TICK_MS, Wheel};
 use crate::layout::{
     BODY_GAP_DIP, BODY_SIZE_DIP, BUTTON_SIZE_DIP, ICON_LEFT_DIP, ICON_SIZE_DIP, PAD_TOP_DIP, Part,
     Rect, TEXT_LEFT_DIP, TEXT_RIGHT_DIP, TITLE_DIP, TITLE_RIGHT_DIP, TITLE_SIZE_DIP, stripe_rect,
@@ -122,6 +130,8 @@ pub fn play(b: Arc<[u8]>) {
 thread_local! {
     static PANELS: RefCell<HashMap<u64, Card>> = RefCell::new(HashMap::new());
     static TICKER: RefCell<Option<Retained<NSTimer>>> = const { RefCell::new(None) };
+    /// The motion frames (Engine::frame) while anything moves or the stack is open.
+    static FRAMER: RefCell<Option<Retained<NSTimer>>> = const { RefCell::new(None) };
     static SETUP: Cell<bool> = const { Cell::new(false) };
     static PLAYING: RefCell<Vec<Retained<NSSound>>> = const { RefCell::new(Vec::new()) };
     static CONFETTI: RefCell<Option<Overlay>> = const { RefCell::new(None) };
@@ -536,7 +546,7 @@ impl Surface for MacSurface {
         }
     }
 
-    fn place(&mut self, key: u64, x: i32, y: i32, w: i32, h: i32, raise: bool, _placed: bool) {
+    fn place(&mut self, key: u64, x: i32, y: i32, w: i32, h: i32) {
         let Some(p) = panel(key) else { return };
         let f = NSRect::new(
             NSPoint::new(x as f64, primary_height(self.mtm) - y as f64 - h as f64),
@@ -545,14 +555,49 @@ impl Surface for MacSurface {
         let cur = p.frame();
         if f != cur {
             let resized = f.size != cur.size;
-            p.setFrame_display(f, true);
+            // Called every frame while the card moves; display draws the
+            // new size (draw set the look for it just before).
+            p.setFrame_display(f, resized);
             if resized {
                 p.invalidateShadow();
             }
         }
-        if raise && p.isVisible() {
-            p.orderFrontRegardless();
+    }
+
+    fn restack(&mut self, keys: &[u64]) {
+        // Each to the front of the status level in turn: the last ends up
+        // in front. Only panels already shown (ordering one in shows it).
+        for k in keys {
+            if let Some(p) = panel(*k)
+                && p.isVisible()
+            {
+                p.orderFrontRegardless();
+            }
         }
+    }
+
+    fn frames(&mut self, on: bool) {
+        FRAMER.with(|t| {
+            repeating(&mut t.borrow_mut(), on, FRAME_MS, || {
+                if let Some(mtm) = MainThreadMarker::new() {
+                    ENGINE.frame(&mut MacSurface { mtm }, Instant::now());
+                }
+            })
+        });
+    }
+
+    fn cursor(&mut self) -> Option<(i32, i32)> {
+        // Bottom-up from the primary screen's bottom-left; the engine's
+        // space is top-down.
+        let m = NSEvent::mouseLocation();
+        Some((
+            m.x.floor() as i32,
+            (primary_height(self.mtm) - m.y).floor() as i32,
+        ))
+    }
+
+    fn reduce_motion(&mut self) -> bool {
+        NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
     }
 
     fn alpha(&mut self, key: u64, a: u8) {
@@ -578,26 +623,10 @@ impl Surface for MacSurface {
 
     fn timer(&mut self, on: bool) {
         TICKER.with(|t| {
-            let mut t = t.borrow_mut();
-            if on && t.is_none() {
-                let block = RcBlock::new(|_t: std::ptr::NonNull<NSTimer>| {
-                    ENGINE.tick(Instant::now());
-                    sync();
-                });
-                let timer = unsafe {
-                    NSTimer::timerWithTimeInterval_repeats_block(
-                        TICK_MS as f64 / 1000.0,
-                        true,
-                        &block,
-                    )
-                };
-                // Common modes: the cards keep counting down while the app
-                // tracks a menu or a window resize.
-                unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
-                *t = Some(timer);
-            } else if !on && let Some(timer) = t.take() {
-                timer.invalidate();
-            }
+            repeating(&mut t.borrow_mut(), on, TICK_MS, || {
+                ENGINE.tick(Instant::now());
+                sync();
+            })
         });
     }
 
@@ -616,6 +645,23 @@ impl Surface for MacSurface {
         NSUserDefaults::standardUserDefaults()
             .stringForKey(&NSString::from_str("AppleInterfaceStyle"))
             .is_some_and(|s| s.to_string().eq_ignore_ascii_case("dark"))
+    }
+}
+
+/// Starts (on) a main-run-loop timer every `ms` running f into slot, or
+/// stops the one there.
+fn repeating(slot: &mut Option<Retained<NSTimer>>, on: bool, ms: u32, f: impl Fn() + 'static) {
+    if on && slot.is_none() {
+        let block = RcBlock::new(move |_t: std::ptr::NonNull<NSTimer>| f());
+        let timer = unsafe {
+            NSTimer::timerWithTimeInterval_repeats_block(ms as f64 / 1000.0, true, &block)
+        };
+        // Common modes: the cards keep counting down and moving while the
+        // app tracks a menu or a window resize.
+        unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
+        *slot = Some(timer);
+    } else if !on && let Some(timer) = slot.take() {
+        timer.invalidate();
     }
 }
 
@@ -726,6 +772,29 @@ define_class!(
             self.send(Mouse::Leave, e);
         }
 
+        /// A press's moves go to the view it started on, also off it (the
+        /// Mac's capture): the drag that throws or scrolls.
+        #[unsafe(method(mouseDragged:))]
+        fn mouse_dragged(&self, e: &NSEvent) {
+            if !self.ivars().ctrl_down.get() {
+                self.send(Mouse::Move, e);
+            }
+        }
+
+        /// The wheel or a two-finger swipe over the open stack moves it one
+        /// card per step (the engine debounces a trackpad's stream).
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, e: &NSEvent) {
+            let dy = e.scrollingDeltaY();
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            if dy != 0.0 {
+                let dir = if dy > 0.0 { Wheel::Up } else { Wheel::Down };
+                ENGINE.wheel(&mut MacSurface { mtm }, dir, Instant::now());
+            }
+        }
+
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, e: &NSEvent) {
             let ctrl = e.modifierFlags().contains(NSEventModifierFlags::Control);
@@ -781,7 +850,14 @@ impl ToastView {
             return;
         };
         let (x, y) = (p.x.floor() as i32, p.y.floor() as i32);
-        if ENGINE.mouse(&mut MacSurface { mtm }, self.ivars().key, ev, x, y) {
+        if ENGINE.mouse(
+            &mut MacSurface { mtm },
+            self.ivars().key,
+            ev,
+            x,
+            y,
+            Instant::now(),
+        ) {
             wake(); // queued: the clicked panel isn't removed inside its own event
         }
     }
@@ -928,6 +1004,11 @@ fn draw_card(all: NSRect, l: &Look, glass: Option<f64>) {
         None => rgb(k.background).setFill(),
     }
     shape.fill();
+    if l.folded {
+        // Behind a deck's front card: the card's body alone.
+        fill_box(all, None, Some(&rgb(k.border)), radius);
+        return;
+    }
     let ctx = NSGraphicsContext::currentContext();
     if let Some(c) = &ctx {
         c.saveGraphicsState();
