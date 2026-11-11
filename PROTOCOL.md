@@ -29,8 +29,11 @@ in about 70 lines of Node with no dependencies.
   written get half a second at most, then it exits without them.
 - Events are written in order and wait for the app to read them, 4096 at
   most. When they are that many, it stops reading commands until the app
-  reads (back-pressure), so an app that reads stdout gets every event,
-  however fast it sends. An app that reads slowly also delays its own
+  reads (back-pressure), so an app that keeps reading stdout gets every
+  event, however fast it sends. "Keeps reading" matters: an app that
+  writes a whole burst before its first read, and so leaves stdout unread
+  for 250 ms while the queue is full, loses events and gets a count
+  instead (next point). An app that reads slowly also delays its own
   `quit` and the end of its stdin: they come after the commands before
   them.
 - An app that stops reading for good can't make it hold more: once one
@@ -42,8 +45,10 @@ in about 70 lines of Node with no dependencies.
 - Dropped events are counted. The next event written after a loss is
   preceded by `{"event":"error","message":"N events dropped: stdout was not
   read"}` (`1 event dropped` for one); if nothing follows the loss, the
-  error comes once the events before it are written. Every event is either
-  written or counted there.
+  error comes once the events before it are written. While it runs, every
+  event is either written or counted there. At exit that no longer holds:
+  events still unwritten when the half second runs out, and a count not
+  yet reported, are lost without a report.
 - If stdout's reader goes away, it exits.
 - On macOS it runs the AppKit loop on its main thread as an Accessory app:
   no Dock icon, no menu bar, never the active app; the cards never take
