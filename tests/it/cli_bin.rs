@@ -387,14 +387,20 @@ fn serve_with_a_stalled_reader_drops_counts_and_reports() {
             }
         }
     });
-    // The app reads again: one more answer, then the sentinel.
-    writeln!(stdin, "{{\"cmd\":\"list\"}}\n{SENTINEL}").unwrap();
-    stdin.flush().unwrap();
     let (mut answers, mut lost, mut ready) = (0u64, 0u64, 0);
-    loop {
+    for seen in 0.. {
+        if seen == 1000 {
+            // The app reads again, and the program's writes go through:
+            // one more answer, then the sentinel. (Sent earlier, while a
+            // write is still stuck, they would be dropped too.)
+            writeln!(stdin, "{{\"cmd\":\"list\"}}\n{SENTINEL}").unwrap();
+            stdin.flush().unwrap();
+        }
         let l = lines
             .recv_timeout(Duration::from_secs(10))
-            .expect("a line within 10 s");
+            .unwrap_or_else(|e| {
+                panic!("{e:?} after {seen} lines: {answers} answers, {lost} dropped")
+            });
         let e: serde_json::Value = serde_json::from_str(&l).unwrap();
         if e["event"] == "ready" {
             ready += 1;
