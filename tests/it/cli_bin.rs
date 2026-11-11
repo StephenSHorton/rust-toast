@@ -155,9 +155,9 @@ fn cli_smoke() {
     // Visible in screenshots, silent.
     p.send(r#"{"cmd":"configure","app_name":"rust-toast smoke","capture_exclude":false}"#);
     p.send(r#"{"cmd":"set_options","sound":false}"#);
-    // One card at a time: the first lands in the corner. A pointer resting
-    // where a card lands counts as hovering the stack, which pauses expiry
-    // (by design), so keep the pointer off the top-right corner.
+    // One card at a time, in the corner: a pointer resting where a card
+    // lands was seen to pause expiry like a hover (MAC.md), so keep the
+    // pointer off the top-right corner.
     p.send(r#"{"cmd":"post","id":"quick","title":"Expires","body":"in half a second","timeout_ms":500}"#);
     assert_eq!(
         p.event(),

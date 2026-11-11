@@ -1,7 +1,8 @@
 # Checks every push and pull request on Windows and macOS (and the no-op
-# path on Linux); a version tag (v0.3.1) also builds the rust-toast program
-# for Windows x64 and macOS (universal: arm64 + x64) and attaches it, with
-# SHA-256 checksums, to a GitHub release for that tag.
+# path on Linux) and builds the rust-toast program for Windows x64 and
+# macOS (universal: arm64 + x64) as workflow artifacts; a version tag
+# (v0.3.1) also attaches them, with SHA-256 checksums, to a GitHub release
+# for that tag.
 name: CI
 
 on:
@@ -42,7 +43,6 @@ jobs:
 
   build:
     name: build (${{ matrix.name }})
-    if: startsWith(github.ref, 'refs/tags/v')
     needs: check
     strategy:
       matrix:
@@ -57,11 +57,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          # tr: a Windows checkout may have CRLF line ends.
+          version=$(tr -d '\r' < Cargo.toml | sed -n 's/^version = "\(.*\)"$/\1/p' | head -n 1)
           if [ "$TAG" != "v$version" ]; then
             echo "tag $TAG does not match Cargo.toml version $version" >&2
             exit 1
@@ -75,6 +77,7 @@ jobs:
           cargo build --release --features cli --bin rust-toast --target x86_64-pc-windows-msvc
           mkdir dist
           cp target/x86_64-pc-windows-msvc/release/rust-toast.exe dist/rust-toast-windows-x64.exe
+          dist/rust-toast-windows-x64.exe --version
       - name: Build (macOS universal)
         if: runner.os == 'macOS'
         run: |

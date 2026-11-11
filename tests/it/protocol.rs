@@ -26,6 +26,9 @@ struct Headless {
     now: Mutex<Instant>,
     /// Options as the session last set them, in order (tests).
     sets: Mutex<Vec<Options>>,
+    /// Posts and option changes wait for the next sync, as on a real
+    /// platform (whose window thread syncs later).
+    lazy: bool,
 }
 
 impl Headless {
@@ -35,6 +38,7 @@ impl Headless {
             rec: Mutex::new(Rec::new(1.0)),
             now: Mutex::new(Instant::now()),
             sets: Mutex::new(vec![]),
+            lazy: false,
         }
     }
 
@@ -87,14 +91,18 @@ impl Backend for &Headless {
     fn set_options(&self, o: Options) {
         self.sets.lock().unwrap().push(o.clone());
         self.e.set_options(o);
-        self.sync();
+        if !self.lazy {
+            self.sync();
+        }
     }
     fn options(&self) -> Options {
         self.e.options()
     }
     fn post(&self, n: Note) {
         self.e.post(n, self.now());
-        self.sync();
+        if !self.lazy {
+            self.sync();
+        }
     }
     fn close(&self, id: &str) {
         self.e.close(id);
@@ -487,6 +495,22 @@ fn per_card_confetti_leaves_the_options_as_they_were() {
 
     s.line(br#"{"cmd":"post","title":"Plain","kind":"success"}"#);
     assert_eq!(h.rec.lock().unwrap().bursts.len(), 1, "no burst by default");
+
+    // The real window thread syncs after the options are put back: the
+    // burst is decided at the post.
+    let h = Headless {
+        lazy: true,
+        ..Headless::new()
+    };
+    let (mut s, _rx) = session(&h);
+    s.line(br#"{"cmd":"post","id":"party","title":"Shipped","kind":"success","confetti":true}"#);
+    assert!(!h.e.options().confetti);
+    h.sync();
+    assert_eq!(
+        h.rec.lock().unwrap().bursts.len(),
+        1,
+        "a burst after a late sync"
+    );
 }
 
 #[test]

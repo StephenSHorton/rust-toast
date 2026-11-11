@@ -42,9 +42,13 @@ Done without touching the mouse or keyboard: commands, passive
   never active; it exits when its stdin closes, also when the app that
   spawned it is killed. `RUST_TOAST_SMOKE=1 cargo test --features cli
   cli_smoke` passes (real cards, posted, expired, closed).
-- **Seen in passing:** a card that lands where the pointer rests counts
-  as hovering the stack, so nothing expires until the pointer moves off
-  (the same as hovering; only a card still sliding in is ignored).
+- **For the owner to judge:** with the pointer resting where the second
+  of two cards landed (top-right, over the second card), the first card's
+  500 ms timeout never ran in 4 s (stalled twice); with the pointer off
+  the cards, the same sequence expired on time. So a card landing under a
+  still pointer seems to count as hovering the stack, which pauses expiry.
+  Only a card still sliding in is ignored by the engine; whether a landed
+  one should count is a design call. Not changed here.
 
 Still needs a person's eyes and hand (nothing here drives the mouse):
 hover (brightening x, the stack opening and folding, leaving across a gap),
