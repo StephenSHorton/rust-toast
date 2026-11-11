@@ -184,3 +184,131 @@ fn cli_smoke() {
     drop(p.stdin.take());
     assert!(p.exits(Duration::from_secs(10)).success());
 }
+
+/// `serve` with its stdout piped and never read, as a fire-and-forget app
+/// would leave it.
+fn serve_unread() -> (Child, ChildStdin, std::process::ChildStdout) {
+    let mut child = Command::new(BIN)
+        .arg("serve")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn rust-toast");
+    let stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    (child, stdin, stdout)
+}
+
+/// Waits for child to end by itself; kills it and fails if it doesn't.
+fn ends_within(child: &mut Child, within: Duration) -> std::process::ExitStatus {
+    let end = Instant::now() + within;
+    loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            return s;
+        }
+        if Instant::now() > end {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("rust-toast still running after {within:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Far more answers than any pipe holds, so the program's stdout is full
+/// and stays full: the app never reads it.
+fn flood(stdin: &mut ChildStdin) {
+    let lines = "{\"cmd\":\"list\"}\n".repeat(20_000);
+    stdin.write_all(lines.as_bytes()).unwrap();
+    stdin.flush().unwrap();
+}
+
+#[test]
+fn serve_quits_although_stdout_is_never_read() {
+    let (mut child, mut stdin, stdout) = serve_unread();
+    flood(&mut stdin);
+    writeln!(stdin, r#"{{"cmd":"quit"}}"#).unwrap();
+    stdin.flush().unwrap();
+    // stdin and stdout stay open: the app is alive and just not reading.
+    let s = ends_within(&mut child, Duration::from_secs(5));
+    assert!(s.success(), "{s:?}");
+    drop((stdin, stdout));
+}
+
+#[test]
+fn serve_ends_with_stdin_although_stdout_is_never_read() {
+    let (mut child, mut stdin, stdout) = serve_unread();
+    flood(&mut stdin);
+    drop(stdin);
+    let s = ends_within(&mut child, Duration::from_secs(5));
+    assert!(s.success(), "{s:?}");
+    drop(stdout);
+}
+
+#[test]
+fn a_bad_corner_is_a_bad_argument() {
+    let o = Command::new(BIN)
+        .args(["--title", "x", "--corner", "middle", "--silent"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2), "exit 2 for bad arguments");
+    assert!(o.stdout.is_empty(), "no card, no event");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--corner"));
+}
+
+/// Where there are no cards, one card can't be shown: exit 1 and one error.
+#[cfg(not(any(windows, target_os = "macos")))]
+#[test]
+fn one_card_exits_1_where_there_are_no_cards() {
+    let o = Command::new(BIN)
+        .args(["--title", "x", "--silent"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 1, "{out:?}");
+    let e: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(e["event"], "error");
+    assert!(e["message"].as_str().unwrap().starts_with("not shown"));
+}
+
+/// `--with-parent`: a one-shot card ends when its stdin closes (the app
+/// that spawned it is gone), reported as closed. A real card goes up.
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn one_card_with_parent_ends_when_stdin_closes() {
+    if std::env::var("RUST_TOAST_SMOKE").as_deref() != Ok("1") {
+        eprintln!("skipped: set RUST_TOAST_SMOKE=1");
+        return;
+    }
+    let mut child = Command::new(BIN)
+        .args([
+            "--title",
+            "With parent",
+            "--body",
+            "closed when its stdin closes",
+            "--sticky",
+            "--silent",
+            "--corner",
+            "bottom-left",
+            "--with-parent",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn rust-toast");
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(child.try_wait().unwrap().is_none(), "the sticky card is up");
+    drop(child.stdin.take()); // the parent is gone
+    let s = ends_within(&mut child, Duration::from_secs(5));
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take().unwrap(), &mut out).unwrap();
+    assert!(s.success(), "{s:?} {out:?}");
+    assert_eq!(
+        out.trim(),
+        r#"{"event":"dismiss","id":"auto-1","how":"closed"}"#
+    );
+}

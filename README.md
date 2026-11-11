@@ -26,7 +26,7 @@ v0.2.0. It grew up inside Irori and is shared by suzuri and other apps.
 
 ```toml
 [dependencies]
-rust-toast = { git = "https://github.com/StephenSHorton/rust-toast", tag = "v0.3.0" }
+rust-toast = { git = "https://github.com/StephenSHorton/rust-toast", tag = "v0.4.0" }
 ```
 
 ```rust
@@ -72,7 +72,7 @@ It exits when its stdin closes, so it never outlives the app.
 
 ```sh
 cargo build --release --features cli
-echo '{"cmd":"post","title":"Hello","kind":"success"}' | target/release/rust-toast serve
+(echo '{"cmd":"post","title":"Hello","kind":"success"}'; sleep 4) | target/release/rust-toast serve
 rust-toast --title "Backup finished" --kind success   # one card from a script
 ```
 

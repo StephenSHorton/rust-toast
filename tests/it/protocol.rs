@@ -651,3 +651,13 @@ mod thumbnails {
         assert!(px.iter().all(|&v| v == 200));
     }
 }
+
+#[test]
+fn a_leading_byte_order_mark_is_skipped() {
+    assert_eq!(
+        protocol::parse(b"\xEF\xBB\xBF{\"cmd\":\"list\"}").unwrap(),
+        Command::List
+    );
+    // Only at the start of a line.
+    assert!(protocol::parse(b"{\"cmd\":\"list\"}\xEF\xBB\xBF").is_err());
+}

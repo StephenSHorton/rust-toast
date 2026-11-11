@@ -3,10 +3,11 @@
 //! `rust-toast serve` reads newline-delimited JSON commands on stdin and
 //! writes newline-delimited JSON events on stdout (logs on stderr). It
 //! exits when stdin closes, so it never outlives the program that spawned
-//! it, and on `{"cmd":"quit"}`.
+//! it, and on `{"cmd":"quit"}`, also when nobody reads its stdout.
 //!
 //! `rust-toast --title T [--body B ...]` shows one card, waits until it is
-//! gone and prints how it went, as one event line.
+//! gone and prints how it went, as one event line. With `--with-parent` it
+//! also ends (the card closed) when its stdin closes.
 //!
 //! On macOS the main thread runs NSApp (Accessory: no Dock icon, never
 //! active) and the commands are read on another thread; on Windows the
@@ -16,11 +17,12 @@
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
-use toast::Config;
 use toast::protocol::{
     self, ActionCmd, Emit, Event, Flow, Global, KindName, MAX_LINE, PostCmd, Session,
 };
+use toast::{CORNER_BOTTOM_LEFT, CORNER_BOTTOM_RIGHT, CORNER_TOP_LEFT, CORNER_TOP_RIGHT, Config};
 
 const USAGE: &str = "\
 usage: rust-toast serve
@@ -28,7 +30,7 @@ usage: rust-toast serve
                   [--sticky] [--timeout SECONDS] [--silent]
                   [--action ID:LABEL]... [--thumbnail PATH]
                   [--corner top-right|bottom-right|top-left|bottom-left]
-                  [--app-name NAME]
+                  [--app-name NAME] [--with-parent]
        rust-toast --version | --help";
 
 const HELP: &str = "\
@@ -53,6 +55,10 @@ an action, click or dismiss event):
   --corner CORNER    top-right (default), bottom-right, top-left,
                      bottom-left.
   --app-name NAME    The windows' title.
+  --with-parent      Also ends, the card closed, when stdin closes: spawn
+                     it with stdin piped, and it goes when your program
+                     does (even if killed). Without it the card outlives
+                     the program that started it.
 
   --version          Prints the version.
   --help             Prints this.
@@ -65,6 +71,7 @@ struct Once {
     post: PostCmd,
     corner: Option<String>,
     app_name: Option<String>,
+    with_parent: bool,
 }
 
 enum Mode {
@@ -132,8 +139,24 @@ fn parse_args(args: &[String]) -> Result<Option<Mode>, String> {
                 });
             }
             "--thumbnail" => o.post.thumbnail = Some(val(a)?),
-            "--corner" => o.corner = Some(val(a)?),
+            "--corner" => {
+                let c = val(a)?;
+                if ![
+                    CORNER_TOP_RIGHT,
+                    CORNER_BOTTOM_RIGHT,
+                    CORNER_TOP_LEFT,
+                    CORNER_BOTTOM_LEFT,
+                ]
+                .contains(&c.as_str())
+                {
+                    return Err(format!(
+                        "--corner: one of top-right, bottom-right, top-left, bottom-left, not {c:?}"
+                    ));
+                }
+                o.corner = Some(c);
+            }
             "--app-name" => o.app_name = Some(val(a)?),
+            "--with-parent" => o.with_parent = true,
             _ => return Err(format!("unknown argument {a:?}")),
         }
     }
@@ -144,6 +167,13 @@ fn parse_args(args: &[String]) -> Result<Option<Mode>, String> {
 }
 
 fn main() {
+    // A panic on any thread ends the program, rather than leaving the
+    // AppKit loop running with nobody reading stdin.
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        report(info);
+        std::process::exit(101);
+    }));
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = match parse_args(&args) {
         Ok(Some(m)) => m,
@@ -163,13 +193,60 @@ fn main() {
 enum Msg {
     Line(String),
     Exit(i32),
+    /// Answer once everything before it is written.
+    Flushed(mpsc::Sender<()>),
+}
+
+/// Events waiting for the writer, at most. Past this the app isn't
+/// reading stdout and newer events are dropped (PROTOCOL.md).
+const QUEUE: usize = 4096;
+
+/// How long `quit` or the end of stdin waits for the events before it
+/// to be written.
+const GRACE: Duration = Duration::from_millis(500);
+
+/// The writer thread's queue. Sending never waits: the card threads and
+/// the input thread go on even when nobody reads stdout.
+#[derive(Clone)]
+struct Out(mpsc::SyncSender<Msg>);
+
+impl Out {
+    fn line(&self, l: String) {
+        let _ = self.0.try_send(Msg::Line(l));
+    }
+
+    /// Exits with code once the queue is written, or after [`GRACE`] if
+    /// stdout isn't being read. The exit doesn't wait behind a write.
+    fn exit_soon(&self, code: i32) -> ! {
+        let end = Instant::now() + GRACE;
+        let (done, written) = mpsc::channel();
+        let mut m = Msg::Flushed(done);
+        loop {
+            match self.0.try_send(m) {
+                Ok(()) => {
+                    let _ = written.recv_timeout(end.saturating_duration_since(Instant::now()));
+                    break;
+                }
+                Err(mpsc::TrySendError::Full(back)) if Instant::now() < end => {
+                    m = back;
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+        platform::exit(code);
+        // On macOS the exit runs between AppKit's events; should that loop
+        // be stuck, end anyway.
+        std::thread::sleep(Duration::from_secs(2));
+        std::process::exit(code)
+    }
 }
 
 /// Events go through one writer thread: a line at a time, flushed, so the
 /// card threads never wait on a slow reader. A write that fails means the
 /// reader is gone: the program exits.
-fn writer() -> mpsc::Sender<Msg> {
-    let (tx, rx) = mpsc::channel::<Msg>();
+fn writer() -> Out {
+    let (tx, rx) = mpsc::sync_channel::<Msg>(QUEUE);
     std::thread::Builder::new()
         .name("rust-toast-out".into())
         .spawn(move || {
@@ -187,21 +264,23 @@ fn writer() -> mpsc::Sender<Msg> {
                         platform::exit(code);
                         return;
                     }
+                    Msg::Flushed(done) => {
+                        let _ = out.flush();
+                        let _ = done.send(());
+                    }
                 }
             }
         })
         .expect("rust-toast: can't start the writer thread");
-    tx
+    Out(tx)
 }
 
 fn serve() {
     let tx = writer();
     let out = tx.clone();
-    let emit: Emit = Arc::new(move |e: Event| {
-        let _ = out.send(Msg::Line(e.to_line()));
-    });
+    let emit: Emit = Arc::new(move |e: Event| out.line(e.to_line()));
     let mut s = Session::new(Global, Config::default(), emit);
-    let _ = tx.send(Msg::Line(s.ready().to_line()));
+    tx.line(s.ready().to_line());
     let mut r = io::stdin().lock();
     loop {
         match protocol::read_line(&mut r, MAX_LINE) {
@@ -212,7 +291,7 @@ fn serve() {
             }
             Ok(Some(Err(start))) => {
                 let e = Event::error(format!("line longer than {MAX_LINE} bytes"), Some(&start));
-                let _ = tx.send(Msg::Line(e.to_line()));
+                tx.line(e.to_line());
             }
             Ok(None) => break, // stdin closed: the app that spawned us is gone
             Err(e) => {
@@ -221,7 +300,8 @@ fn serve() {
             }
         }
     }
-    let _ = tx.send(Msg::Exit(0));
+    // Not through the queue: a full stdout must not hold the exit up.
+    tx.exit_soon(0);
 }
 
 fn once(o: Once) {
@@ -234,9 +314,9 @@ fn once(o: Once) {
             Event::Error { .. } => None,
             _ => return, // ready, posted: only the outcome is printed
         };
-        let _ = out.send(Msg::Line(e.to_line()));
+        out.line(e.to_line());
         if let Some(c) = code {
-            let _ = out.send(Msg::Exit(c));
+            let _ = out.0.try_send(Msg::Exit(c));
         }
     });
     let mut s = Session::new(Global, Config::default(), emit.clone());
@@ -277,6 +357,14 @@ fn once(o: Once) {
             };
             emit(e);
             return;
+        }
+    }
+    if o.with_parent {
+        // The app that spawned us holds our stdin; when it goes, so does
+        // the card (reported as closed, and the emit exits).
+        let _ = io::copy(&mut io::stdin().lock(), &mut io::sink());
+        for id in s.ids() {
+            let _ = s.run(protocol::Command::Close { id });
         }
     }
     // The emit exits once the card is gone; keep the session (and so the

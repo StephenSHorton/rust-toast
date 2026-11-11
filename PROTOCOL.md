@@ -24,7 +24,11 @@ in about 70 lines of Node with no dependencies.
   sent earlier are read in order anyway.
 - It exits when its stdin closes, so it can never outlive the app that
   spawned it (also when that app is killed), and on `{"cmd":"quit"}`. Its
-  cards go with it. The exit status is 0.
+  cards go with it, reporting nothing. The exit status is 0.
+- It exits on either even when the app doesn't read stdout: events not yet
+  written get half a second, then it exits without them.
+- Events wait for the app to read them, 4096 at most; past that, newer
+  events are dropped. An app that wants every event reads stdout.
 - If stdout's reader goes away, it exits.
 - On macOS it runs the AppKit loop on its main thread as an Accessory app:
   no Dock icon, no menu bar, never the active app; the cards never take
@@ -80,7 +84,8 @@ Every event has `event`.
 | `error` | `message`, `id` (when about a card), `command` (when about a line) | Something was wrong. The program carries on. |
 
 Each card ends with exactly one of `action`, `click` or `dismiss`, except
-a card replaced by a post with its id, which goes on under the new post.
+a card replaced by a post with its id, which goes on under the new post,
+and a card still up when the program exits, which reports nothing.
 
 `how`:
 
@@ -98,23 +103,27 @@ a card replaced by a post with its id, which goes on under the new post.
   the wrong type is an `error` event; nothing else happens. `command` echoes
   the start of the line (at most 200 characters, control characters
   removed).
-- A bad value (`corner`, `volume`, a colour) makes the whole command an
-  error; nothing of it is applied.
+- A bad value (`corner`, a colour, a `volume` that isn't a number) makes
+  the whole command an error; nothing of it is applied.
+- Numbers outside their range are clamped, not errors: `volume` to 0 to 1,
+  `corner_radius` to 0 to 24; `glass` outside 0 to 1 is solid; `shown`
+  and `max_cards` are at least 1.
 - A line longer than 256 KiB is an `error` and skipped.
 - Text is cut: `id` and button ids to 128 characters, `title` to 256,
   `body` to 2048, labels to 64, `app_name` to 64.
 - `max_cards` and `shown` are capped at 50; `timeout_ms` at a day.
 - A thumbnail is read only as an image: a regular file (not a directory,
   device or pipe) of at most 16 MiB whose first bytes say PNG or JPEG, at
-  most 8192 pixels a side. Anything else is an `error` with the card's
+  most 4096 pixels a side. Anything else is an `error` with the card's
   `id`, and the card goes up without it. Errors never quote the file.
 - A post while cards are off (`enabled: false`) is an `error`.
+- A UTF-8 byte-order mark at the start of a line is skipped.
 
 ## Example
 
 ```text
 > (from the program)  < (from the app)
-> {"event":"ready","version":"0.3.0","protocol":1,"platform":"macos","supported":true}
+> {"event":"ready","version":"0.4.0","protocol":1,"platform":"macos","supported":true}
 < {"cmd":"configure","app_name":"Hearth","scheme":"system","corner_radius":10}
 < {"cmd":"set_options","corner":"bottom-right","volume":0.4}
 < {"cmd":"post","id":"update","title":"An update is ready","body":"Restart now, or it installs when you quit.","sticky":true,"actions":[{"id":"restart","label":"Restart"},{"id":"later","label":"Later"}]}
@@ -136,10 +145,20 @@ rust-toast --title "Deploy?" --sticky --action yes:Deploy --action no:Cancel
 
 It waits until the card is gone and prints its one closing event (`action`,
 `click` or `dismiss`, as above), then exits 0; 1 when the card could not be
-shown (with an `error` line), 2 for bad arguments. `rust-toast --help`
-lists the flags: `--title`, `--body`, `--kind`, `--sticky`,
-`--timeout SECONDS`, `--silent`, `--action ID:LABEL` (twice at most),
-`--thumbnail`, `--corner`, `--app-name`.
+shown (with an `error` line), 2 for bad arguments (a bad `--corner` too).
+A thumbnail that can't be read is an `error` line before the closing event;
+the card goes up without it. `rust-toast --help` lists the flags:
+`--title`, `--body`, `--kind`, `--sticky`, `--timeout SECONDS`,
+`--silent`, `--action ID:LABEL` (twice at most), `--thumbnail`,
+`--corner`, `--app-name`, `--with-parent`.
+
+Only `serve` is tied to the life of the app that started it. One card
+outlives it (so `rust-toast --title Done &` from a script that then exits
+still shows), unless `--with-parent` is given: then it reads stdin, and
+when stdin closes it takes the card down and prints
+`{"event":"dismiss","id":"auto-1","how":"closed"}`. Spawn it with stdin
+piped and keep the pipe open; with stdin at `/dev/null` (Node's
+`stdio: "ignore"`, a shell `&`) the card goes at once.
 
 ## Versions
 

@@ -41,7 +41,10 @@ Done without touching the mouse or keyboard: commands, passive
   corner, PNG and JPEG thumbnails, expiry, `close`, Accessory policy and
   never active; it exits when its stdin closes, also when the app that
   spawned it is killed. `RUST_TOAST_SMOKE=1 cargo test --features cli
-  cli_smoke` passes (real cards, posted, expired, closed).
+  cli_smoke` passes (real cards, posted, expired, closed). With stdout
+  piped and never read, `quit` and stdin closing still end it in about
+  half a second; `--with-parent` ends a one-shot card within 2 s of its
+  parent's `kill -9` (without it the card stays up, as documented).
 - **For the owner to judge:** with the pointer resting where the second
   of two cards landed (top-right, over the second card), the first card's
   500 ms timeout never ran in 4 s (stalled twice); with the pointer off

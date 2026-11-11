@@ -55,7 +55,7 @@ pub const MAX_ECHO: usize = 200;
 /// The largest thumbnail file read.
 pub const MAX_THUMB_FILE: u64 = 16 * 1024 * 1024;
 /// The largest thumbnail decoded, in pixels a side.
-pub const MAX_THUMB_SIDE: usize = 8192;
+pub const MAX_THUMB_SIDE: usize = 4096;
 /// The longest `timeout_ms` (a day); longer is cut to it.
 pub const MAX_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;
 /// The most cards up at once a `configure` may ask for.
@@ -283,8 +283,10 @@ pub fn bound(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-/// Parses one command line (without its newline).
+/// Parses one command line (without its newline). A UTF-8 byte-order mark
+/// at its start, which some Windows clients send, is skipped.
 pub fn parse(line: &[u8]) -> Result<Command, String> {
+    let line = line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(line);
     serde_json::from_slice::<Command>(line).map_err(|e| {
         // serde's message names the field or variant, never the input's
         // contents beyond a short token; cut it anyway.
@@ -478,9 +480,18 @@ pub fn load_thumbnail(path: &Path) -> Result<Image, String> {
     if meta.len() > MAX_THUMB_FILE {
         return Err("thumbnail: file too large".into());
     }
-    let mut bytes = Vec::with_capacity(meta.len() as usize);
-    File::open(path)
-        .and_then(|f| f.take(MAX_THUMB_FILE + 1).read_to_end(&mut bytes))
+    // Checked again on the handle: the path may have been swapped since.
+    // Non-blocking, so a pipe swapped in can't hold the open up.
+    let f = open_nonblocking(path).map_err(|_| "thumbnail: can't open the file".to_string())?;
+    let meta = f
+        .metadata()
+        .map_err(|_| "thumbnail: can't open the file".to_string())?;
+    if !meta.is_file() {
+        return Err("thumbnail: not a regular file".into());
+    }
+    let mut bytes = Vec::with_capacity(meta.len().min(MAX_THUMB_FILE) as usize);
+    f.take(MAX_THUMB_FILE + 1)
+        .read_to_end(&mut bytes)
         .map_err(|_| "thumbnail: can't read the file".to_string())?;
     if bytes.len() as u64 > MAX_THUMB_FILE {
         return Err("thumbnail: file too large".into());
@@ -496,6 +507,32 @@ pub fn load_thumbnail(path: &Path) -> Result<Image, String> {
     Image::new(w as u32, h as u32, rgba).ok_or_else(|| "thumbnail: empty image".to_string())
 }
 
+/// Opens path for reading; on macOS and Linux with O_NONBLOCK, which a
+/// regular file ignores.
+fn open_nonblocking(path: &Path) -> std::io::Result<File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        #[cfg(target_os = "macos")]
+        const O_NONBLOCK: i32 = 0x0004;
+        #[cfg(target_os = "linux")]
+        const O_NONBLOCK: i32 = 0o4000;
+        o.custom_flags(O_NONBLOCK);
+    }
+    o.open(path)
+}
+
+// chunks_exact, not as_chunks (Rust 1.88), so older toolchains still
+// build; clippy 1.99's chunks_exact_to_as_chunks prefers the latter.
+#[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
 fn decode_png(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
     let bad = |_| "thumbnail: not a readable PNG".to_string();
     let mut d = png::Decoder::new_with_limits(
@@ -517,15 +554,11 @@ fn decode_png(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
     let rgba: Vec<u8> = match f.color_type {
         png::ColorType::Rgba => px.to_vec(),
         png::ColorType::Rgb => px
-            .as_chunks::<3>()
-            .0
-            .iter()
+            .chunks_exact(3)
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect(),
         png::ColorType::GrayscaleAlpha => px
-            .as_chunks::<2>()
-            .0
-            .iter()
+            .chunks_exact(2)
             .flat_map(|p| [p[0], p[0], p[0], p[1]])
             .collect(),
         png::ColorType::Grayscale => px.iter().flat_map(|&g| [g, g, g, 255]).collect(),
