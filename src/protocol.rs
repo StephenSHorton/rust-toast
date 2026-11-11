@@ -627,7 +627,8 @@ pub fn shrink(w: usize, h: usize, rgba: Vec<u8>) -> (usize, usize, Vec<u8>) {
 }
 
 /// Where events go. Called from any thread, also the cards' own; it must
-/// not block for long.
+/// not block for long. (The `rust-toast` program's may wait on the thread
+/// that runs commands, for the app to read, never on the cards' threads.)
 pub type Emit = Arc<dyn Fn(Event) + Send + Sync>;
 
 /// What the session drives: the library's free functions ([`Global`]) or,

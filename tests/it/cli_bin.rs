@@ -312,3 +312,129 @@ fn one_card_with_parent_ends_when_stdin_closes() {
         r#"{"event":"dismiss","id":"auto-1","how":"closed"}"#
     );
 }
+
+/// The error line whose echo marks the end of a burst.
+const SENTINEL: &str = "end of the burst";
+
+/// A reading app that sends a burst far past the queue (4096) in one write
+/// gets every answer, in order: the input thread waits for the writer
+/// instead of dropping. The app reads steadily but a little slower than
+/// the program answers, as a real one would.
+#[test]
+fn serve_answers_every_command_of_a_burst_in_order() {
+    let (mut child, mut stdin, stdout) = serve_unread();
+    let (tx, lines) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for (i, l) in BufReader::new(stdout).lines().enumerate() {
+            let Ok(l) = l else { break };
+            if tx.send(l).is_err() {
+                break;
+            }
+            if i % 200 == 0 {
+                std::thread::sleep(Duration::from_millis(5)); // about 0.5 s in all
+            }
+        }
+    });
+    let mut burst = "{\"cmd\":\"list\"}\n".repeat(20_000);
+    burst.push_str(SENTINEL);
+    burst.push('\n');
+    stdin.write_all(burst.as_bytes()).unwrap();
+    stdin.flush().unwrap();
+    let event = || -> serde_json::Value {
+        let l = lines
+            .recv_timeout(Duration::from_secs(10))
+            .expect("an event line within 10 s");
+        serde_json::from_str(&l).unwrap_or_else(|e| panic!("not JSON: {l:?}: {e}"))
+    };
+    assert_eq!(event()["event"], "ready");
+    for i in 0..20_000 {
+        let e = event();
+        assert_eq!(e["event"], "cards", "answer {i} of 20,000: {e}");
+    }
+    let e = event();
+    assert_eq!(e["event"], "error");
+    assert_eq!(e["command"], SENTINEL, "after the 20,000 answers: {e}");
+    drop(stdin);
+    let s = ends_within(&mut child, Duration::from_secs(10));
+    assert!(s.success(), "{s:?}");
+}
+
+/// The count in a "N events dropped" error, if e is one.
+fn dropped(e: &serde_json::Value) -> Option<u64> {
+    let m = e["message"].as_str()?;
+    let (n, rest) = m.split_once(' ')?;
+    (e["event"] == "error" && rest.starts_with("event") && rest.contains("dropped"))
+        .then(|| n.parse().ok())
+        .flatten()
+}
+
+/// An app that stops reading stdout can't make the program hold more than
+/// its queue: once a write has been stuck for a moment, answers are dropped
+/// and counted, and when the app reads again an error says how many. Every
+/// answer is either read or counted.
+#[test]
+fn serve_with_a_stalled_reader_drops_counts_and_reports() {
+    let (mut child, mut stdin, stdout) = serve_unread();
+    flood(&mut stdin);
+    // Well past the stall window, with stdout still unread.
+    std::thread::sleep(Duration::from_millis(1500));
+    let (tx, lines) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for l in BufReader::new(stdout).lines() {
+            let Ok(l) = l else { break };
+            if tx.send(l).is_err() {
+                break;
+            }
+        }
+    });
+    // The app reads again: one more answer, then the sentinel.
+    writeln!(stdin, "{{\"cmd\":\"list\"}}\n{SENTINEL}").unwrap();
+    stdin.flush().unwrap();
+    let (mut answers, mut lost, mut ready) = (0u64, 0u64, 0);
+    loop {
+        let l = lines
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a line within 10 s");
+        let e: serde_json::Value = serde_json::from_str(&l).unwrap();
+        if e["event"] == "ready" {
+            ready += 1;
+        } else if e["event"] == "cards" {
+            answers += 1;
+        } else if let Some(n) = dropped(&e) {
+            lost += n;
+        } else {
+            assert_eq!(e["command"], SENTINEL, "{e}");
+            break;
+        }
+    }
+    assert_eq!(ready, 1);
+    assert_eq!(
+        answers + lost,
+        20_001,
+        "{answers} read, {lost} reported dropped"
+    );
+    assert!(lost > 0, "nothing dropped although stdout went unread");
+    // The queue (4096) plus what the pipe holds, not all 20,000.
+    assert!(
+        answers < 12_000,
+        "{answers} answers held for an unread stdout"
+    );
+    drop(stdin);
+    let s = ends_within(&mut child, Duration::from_secs(5));
+    assert!(s.success(), "{s:?}");
+}
+
+/// Quit right after a burst into an unread stdout ends the program in
+/// about half a second (PROTOCOL.md), not the 5 s the tests above allow.
+#[test]
+fn serve_quits_promptly_after_a_burst_into_an_unread_stdout() {
+    let (mut child, mut stdin, stdout) = serve_unread();
+    flood(&mut stdin);
+    let sent = Instant::now();
+    writeln!(stdin, r#"{{"cmd":"quit"}}"#).unwrap();
+    stdin.flush().unwrap();
+    let s = ends_within(&mut child, Duration::from_millis(1500));
+    assert!(s.success(), "{s:?}");
+    eprintln!("quit took {:?}", sent.elapsed());
+    drop((stdin, stdout));
+}

@@ -26,9 +26,24 @@ in about 70 lines of Node with no dependencies.
   spawned it (also when that app is killed), and on `{"cmd":"quit"}`. Its
   cards go with it, reporting nothing. The exit status is 0.
 - It exits on either even when the app doesn't read stdout: events not yet
-  written get half a second, then it exits without them.
-- Events wait for the app to read them, 4096 at most; past that, newer
-  events are dropped. An app that wants every event reads stdout.
+  written get half a second at most, then it exits without them.
+- Events are written in order and wait for the app to read them, 4096 at
+  most. When they are that many, it stops reading commands until the app
+  reads (back-pressure), so an app that reads stdout gets every event,
+  however fast it sends. An app that reads slowly also delays its own
+  `quit` and the end of its stdin: they come after the commands before
+  them.
+- An app that stops reading for good can't make it hold more: once one
+  write to stdout has been blocked for 250 ms, events that find the queue
+  full are dropped instead of waited for, until a write gets through
+  again. Events the cards raise on their own (`click`, `action`, a
+  `dismiss` by the person or a timeout) never wait; past the 4096 they are
+  dropped too.
+- Dropped events are counted. The next event written after a loss is
+  preceded by `{"event":"error","message":"N events dropped: stdout was not
+  read"}` (`1 event dropped` for one); if nothing follows the loss, the
+  error comes once the events before it are written. Every event is either
+  written or counted there.
 - If stdout's reader goes away, it exits.
 - On macOS it runs the AppKit loop on its main thread as an Accessory app:
   no Dock icon, no menu bar, never the active app; the cards never take
@@ -123,7 +138,7 @@ and a card still up when the program exits, which reports nothing.
 
 ```text
 > (from the program)  < (from the app)
-> {"event":"ready","version":"0.4.0","protocol":1,"platform":"macos","supported":true}
+> {"event":"ready","version":"0.4.1","protocol":1,"platform":"macos","supported":true}
 < {"cmd":"configure","app_name":"Hearth","scheme":"system","corner_radius":10}
 < {"cmd":"set_options","corner":"bottom-right","volume":0.4}
 < {"cmd":"post","id":"update","title":"An update is ready","body":"Restart now, or it installs when you quit.","sticky":true,"actions":[{"id":"restart","label":"Restart"},{"id":"later","label":"Later"}]}
