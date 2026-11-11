@@ -14,9 +14,11 @@
 //! library runs its own card thread. Elsewhere it reports
 //! `"supported": false` and takes commands as no-ops.
 
+use std::cell::Cell;
+use std::collections::VecDeque;
 use std::io::{self, Write};
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use toast::protocol::{
@@ -197,41 +199,173 @@ enum Msg {
     Flushed(mpsc::Sender<()>),
 }
 
-/// Events waiting for the writer, at most. Past this the app isn't
-/// reading stdout and newer events are dropped (PROTOCOL.md).
+/// Event lines waiting for the writer, at most. The input thread waits for
+/// room ([`STALL`]); the card threads never wait and drop past this.
 const QUEUE: usize = 4096;
+
+/// Of [`QUEUE`], the lines only the card threads may fill: while the input
+/// thread keeps the queue full (a burst of commands), a card's event still
+/// finds room.
+const RESERVE: usize = 256;
+
+/// How long one write to stdout may stay blocked before the reader counts
+/// as stalled. While it is, events that find the queue full are dropped
+/// (and counted) instead of waited for, so quit and the end of stdin still
+/// end the program (PROTOCOL.md).
+const STALL: Duration = Duration::from_millis(250);
 
 /// How long `quit` or the end of stdin waits for the events before it
 /// to be written.
 const GRACE: Duration = Duration::from_millis(500);
 
-/// The writer thread's queue. Sending never waits: the card threads and
-/// the input thread go on even when nobody reads stdout.
+thread_local! {
+    /// Set on the thread that reads stdin: only it waits for room.
+    static WAITS: Cell<bool> = const { Cell::new(false) };
+}
+
+#[derive(Default)]
+struct State {
+    q: VecDeque<Msg>,
+    /// `Msg::Line`s in `q`.
+    lines: usize,
+    /// Events dropped and not reported yet.
+    dropped: u64,
+    /// When the write in progress started; `None` between writes.
+    writing_since: Option<Instant>,
+    /// The writer has ended (stdout's reader is gone).
+    gone: bool,
+}
+
+impl State {
+    /// Whether one write has been blocked for at least `d`.
+    fn blocked_for(&self, d: Duration) -> bool {
+        self.writing_since.is_some_and(|t| t.elapsed() >= d)
+    }
+
+    fn push(&mut self, m: Msg) {
+        if matches!(m, Msg::Line(_)) {
+            self.lines += 1;
+        }
+        self.q.push_back(m);
+    }
+
+    /// A line goes in: first the report of any dropped before it, so the
+    /// report stands where the events went missing.
+    fn push_line(&mut self, l: String) {
+        if self.dropped > 0 {
+            let report = dropped_report(std::mem::take(&mut self.dropped));
+            self.push(Msg::Line(report));
+        }
+        self.push(Msg::Line(l));
+    }
+}
+
+fn dropped_report(n: u64) -> String {
+    let s = if n == 1 { "" } else { "s" };
+    Event::error(format!("{n} event{s} dropped: stdout was not read"), None).to_line()
+}
+
+struct Queue {
+    state: Mutex<State>,
+    /// Something to write.
+    ready: Condvar,
+    /// The writer took a line, or ended.
+    room: Condvar,
+}
+
+impl Queue {
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// The writer thread's queue. The card threads never wait on it; the input
+/// thread waits for room while the writer is moving (back-pressure on a
+/// burst of commands) and drops once it has been stuck for [`STALL`].
 #[derive(Clone)]
-struct Out(mpsc::SyncSender<Msg>);
+struct Out(Arc<Queue>);
 
 impl Out {
     fn line(&self, l: String) {
-        let _ = self.0.try_send(Msg::Line(l));
+        if WAITS.with(|w| w.get()) {
+            self.line_waiting(l)
+        } else {
+            self.line_now(l)
+        }
+    }
+
+    /// Never waits: past [`QUEUE`] the line is dropped and counted.
+    fn line_now(&self, l: String) {
+        let mut s = self.0.lock();
+        if s.gone || s.lines >= QUEUE {
+            s.dropped += 1;
+            return;
+        }
+        s.push_line(l);
+        drop(s);
+        self.0.ready.notify_one();
+    }
+
+    /// Waits for room below [`QUEUE`] - [`RESERVE`] while the writer is
+    /// moving; once one write has been blocked for [`STALL`], drops and
+    /// counts the line at once, until a write gets through again.
+    fn line_waiting(&self, l: String) {
+        let mut s = self.0.lock();
+        loop {
+            if s.gone {
+                s.dropped += 1;
+                return;
+            }
+            if s.lines < QUEUE - RESERVE {
+                break;
+            }
+            let left = match s.writing_since {
+                Some(t) => STALL.saturating_sub(t.elapsed()),
+                None => STALL,
+            };
+            if left.is_zero() {
+                s.dropped += 1;
+                return;
+            }
+            s = self
+                .0
+                .room
+                .wait_timeout(s, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        s.push_line(l);
+        drop(s);
+        self.0.ready.notify_one();
+    }
+
+    /// The writer exits with code once the lines before are written.
+    fn exit_after(&self, code: i32) {
+        self.0.lock().push(Msg::Exit(code));
+        self.0.ready.notify_one();
     }
 
     /// Exits with code once the queue is written, or after [`GRACE`] if
-    /// stdout isn't being read. The exit doesn't wait behind a write.
+    /// stdout isn't being read (sooner if a write has already been stuck
+    /// that long). The exit doesn't wait behind a write.
     fn exit_soon(&self, code: i32) -> ! {
         let end = Instant::now() + GRACE;
         let (done, written) = mpsc::channel();
-        let mut m = Msg::Flushed(done);
+        self.0.lock().push(Msg::Flushed(done));
+        self.0.ready.notify_one();
         loop {
-            match self.0.try_send(m) {
-                Ok(()) => {
-                    let _ = written.recv_timeout(end.saturating_duration_since(Instant::now()));
-                    break;
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            match written.recv_timeout(left.min(Duration::from_millis(10))) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let s = self.0.lock();
+                    if s.gone || s.blocked_for(GRACE) {
+                        break;
+                    }
                 }
-                Err(mpsc::TrySendError::Full(back)) if Instant::now() < end => {
-                    m = back;
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(_) => break,
             }
         }
         platform::exit(code);
@@ -246,15 +380,47 @@ impl Out {
 /// card threads never wait on a slow reader. A write that fails means the
 /// reader is gone: the program exits.
 fn writer() -> Out {
-    let (tx, rx) = mpsc::sync_channel::<Msg>(QUEUE);
+    let q = Arc::new(Queue {
+        state: Mutex::new(State::default()),
+        ready: Condvar::new(),
+        room: Condvar::new(),
+    });
+    let shared = q.clone();
     std::thread::Builder::new()
         .name("rust-toast-out".into())
         .spawn(move || {
+            let q = shared;
             let mut out = io::stdout().lock();
-            for m in rx {
+            loop {
+                let m = {
+                    let mut s = q.lock();
+                    s.writing_since = None;
+                    loop {
+                        if let Some(m) = s.q.pop_front() {
+                            if matches!(m, Msg::Line(_)) {
+                                s.lines -= 1;
+                                s.writing_since = Some(Instant::now());
+                            }
+                            break m;
+                        }
+                        if s.dropped > 0 {
+                            // Nothing after the loss to stand before: report
+                            // it now.
+                            s.writing_since = Some(Instant::now());
+                            break Msg::Line(dropped_report(std::mem::take(&mut s.dropped)));
+                        }
+                        s = q.ready.wait(s).unwrap_or_else(|e| e.into_inner());
+                    }
+                };
+                q.room.notify_all();
                 match m {
                     Msg::Line(l) => {
                         if writeln!(out, "{l}").and_then(|_| out.flush()).is_err() {
+                            let mut s = q.lock();
+                            s.gone = true;
+                            s.writing_since = None;
+                            drop(s);
+                            q.room.notify_all();
                             platform::exit(0);
                             return;
                         }
@@ -272,10 +438,11 @@ fn writer() -> Out {
             }
         })
         .expect("rust-toast: can't start the writer thread");
-    Out(tx)
+    Out(q)
 }
 
 fn serve() {
+    WAITS.with(|w| w.set(true)); // this thread reads stdin
     let tx = writer();
     let out = tx.clone();
     let emit: Emit = Arc::new(move |e: Event| out.line(e.to_line()));
@@ -300,7 +467,7 @@ fn serve() {
             }
         }
     }
-    // Not through the queue: a full stdout must not hold the exit up.
+    // Not behind a stuck write: a full stdout must not hold the exit up.
     tx.exit_soon(0);
 }
 
@@ -316,7 +483,7 @@ fn once(o: Once) {
         };
         out.line(e.to_line());
         if let Some(c) = code {
-            let _ = out.0.try_send(Msg::Exit(c));
+            out.exit_after(c);
         }
     });
     let mut s = Session::new(Global, Config::default(), emit.clone());

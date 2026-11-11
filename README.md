@@ -26,7 +26,7 @@ v0.2.0. It grew up inside Irori and is shared by suzuri and other apps.
 
 ```toml
 [dependencies]
-rust-toast = { git = "https://github.com/StephenSHorton/rust-toast", tag = "v0.4.0" }
+rust-toast = { git = "https://github.com/StephenSHorton/rust-toast", tag = "v0.4.1" }
 ```
 
 ```rust
