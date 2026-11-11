@@ -37,6 +37,8 @@ pub mod config;
 pub mod engine;
 pub mod layout;
 pub mod note;
+#[cfg(feature = "cli")]
+pub mod protocol;
 pub mod sound;
 
 #[cfg(windows)]

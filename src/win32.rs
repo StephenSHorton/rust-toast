@@ -1511,6 +1511,9 @@ fn rect_of(r: Rect) -> RECT {
 /// img's pixels as top-down BGRX for a DIB, blended over bg: the card's
 /// background, or on glass the pass's colour, so paint_glass recovers the
 /// image's own alpha.
+// chunks_exact, not as_chunks (Rust 1.88), so older toolchains still
+// build; clippy 1.99's chunks_exact_to_as_chunks prefers the latter.
+#[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
 fn bgrx_over(img: &Image, bg: Color) -> Vec<u8> {
     let (br, bgg, bb) = bg.rgb();
     let mix = |c: u8, b: u8, a: u32| ((c as u32 * a + b as u32 * (255 - a) + 127) / 255) as u8;

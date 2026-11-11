@@ -26,7 +26,7 @@ v0.2.0. It grew up inside Irori and is shared by suzuri and other apps.
 
 ```toml
 [dependencies]
-rust-toast = { git = "https://github.com/StephenSHorton/rust-toast", tag = "v0.3.0" }
+rust-toast = { git = "https://github.com/StephenSHorton/rust-toast", tag = "v0.4.0" }
 ```
 
 ```rust
@@ -60,6 +60,26 @@ toast::post(Note {
 
 Try it: `cargo run --example demo` (`cargo run --example demo 20 6` keeps
 it up 20 s with six cards, enough to fold a deck).
+
+## From other languages
+
+`rust-toast`, a small program behind the `cli` feature, gives the cards to
+apps not written in Rust. Spawn `rust-toast serve` and keep it running:
+it reads one JSON command a line on stdin (`configure`, `set_options`,
+`post`, `close`, `list`, `quit`) and writes one JSON event a line on
+stdout (`ready`, `posted`, `action`, `click`, `dismiss`, `cards`, `error`).
+It exits when its stdin closes, so it never outlives the app.
+
+```sh
+cargo build --release --features cli
+(echo '{"cmd":"post","title":"Hello","kind":"success"}'; sleep 4) | target/release/rust-toast serve
+rust-toast --title "Backup finished" --kind success   # one card from a script
+```
+
+[PROTOCOL.md](PROTOCOL.md) is the protocol (versioned, with examples);
+[examples/node-client.mjs](examples/node-client.mjs) is a client in Node
+with no dependencies. Tagged releases attach the program for Windows x64
+and macOS (universal) with SHA-256 checksums.
 
 ## Motion
 
@@ -128,7 +148,13 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 cargo build --example demo
 RUST_TOAST_SMOKE=1 cargo test smoke   # Windows: real cards on screen
+cargo test --features cli             # the program and its protocol
+RUST_TOAST_SMOKE=1 cargo test --features cli cli_smoke  # Windows, macOS: real cards
 ```
+
+CI (`.github/workflows/ci.yml`) runs fmt, clippy and the tests, with and
+without `cli`, on Windows and macOS (and Linux, where every call is a
+no-op) on every push and pull request.
 
 The tests drive the shared engine headless with a recording surface:
 layout, decks, hover, the wheel, drags and throws, timings and reduce

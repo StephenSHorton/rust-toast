@@ -8,6 +8,62 @@ aarch64-apple-darwin`, then `cargo clippy --target aarch64-apple-darwin
 in the crate (model, layout, sounds, the shared `Engine` the Win32 side
 also drives) is platform-neutral and tested on the PC.
 
+## Checked on a Mac (macOS 26.6.2, Apple silicon, 2026-11-10)
+
+Done without touching the mouse or keyboard: commands, passive
+`screencapture` shots and a passive window check
+(`CGWindowListCopyWindowInfo`, `NSWorkspace.frontmostApplication`,
+`NSRunningApplication.isActive`, `NSScreen.visibleFrame`).
+
+- **Section 1:** `cargo build`, `cargo clippy --all-targets -- -D warnings`
+  and `cargo test` are clean on 0.3.0 as written; `darwin.rs` needed no
+  fixes. Also clean with `--features cli`, and `cargo fmt --check`.
+- **Demo, 2 cards** (`cargo run --example demo 10 2`): both cards drawn as
+  designed (dark, success stripe green with a check, info stripe blue with
+  `info.circle`, two-line body, Open blue and Later). Top-right, 20 pt in
+  from the right and from the bottom of the menu bar (`visibleFrame` top),
+  inside the visible frame; 340 pt wide (62 pt tall with a one-line body,
+  115 pt with two lines and buttons), 8 pt apart, the oldest at the corner.
+  Window layer 25 (`NSStatusWindowLevel`), alpha 245/255.
+- **Focus:** the frontmost app stayed the terminal throughout; the demo
+  process ran with the Accessory policy and was never active
+  (`isActive` false).
+- **Demo, 7 cards** (`demo 9 7`): past three the older cards fold into the
+  corner deck: the front card in full, two slivers toward the corner
+  behind it (323 x 59 at alpha 0.75, 306 x 56 at alpha 0.54), the newest
+  three in full below.
+- **Capture:** with `capture_exclude` on (the default) the panel's sharing
+  state is None and `screencapture` shows nothing where the card is; off,
+  it is ReadOnly and the card is in the shot. A `configure` that turns
+  it off later applies to new cards only: a card already up stays out of
+  captures.
+- **The `rust-toast` program** (`--features cli`): real cards, bottom-right
+  corner, PNG and JPEG thumbnails, expiry, `close`, Accessory policy and
+  never active; it exits when its stdin closes, also when the app that
+  spawned it is killed. `RUST_TOAST_SMOKE=1 cargo test --features cli
+  cli_smoke` passes (real cards, posted, expired, closed). With stdout
+  piped and never read, `quit` and stdin closing still end it in about
+  half a second; `--with-parent` ends a one-shot card within 2 s of its
+  parent's `kill -9` (without it the card stays up, as documented).
+- **For the owner to judge:** with the pointer resting where the second
+  of two cards landed (top-right, over the second card), the first card's
+  500 ms timeout never ran in 4 s (stalled twice); with the pointer off
+  the cards, the same sequence expired on time. So a card landing under a
+  still pointer seems to count as hovering the stack, which pauses expiry.
+  Only a card still sliding in is ignored by the engine; whether a landed
+  one should count is a design call. Not changed here.
+
+Still needs a person's eyes and hand (nothing here drives the mouse):
+hover (brightening x, the stack opening and folding, leaving across a gap),
+clicks on Open, Later, the body and the x, Control-click and right click,
+a press dragged off a card, sideways drags and throws (`threw card N`),
+the hold after a throw, the wheel and vertical drag on a tall stack
+(natural scrolling on and off), another Space and a full-screen app, a
+screen unplugged or a resolution change, Reduce motion, and the
+appearance flip with the `System` scheme (checked earlier in Irori).
+`keyWindow`/`isKeyWindow` can only be read inside the process; from
+outside, the app never became active and the frontmost app never changed.
+
 ## 1. Compile
 
 ```sh

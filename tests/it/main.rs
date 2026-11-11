@@ -7,3 +7,9 @@ mod confetti;
 mod engine;
 mod model;
 mod smoke_windows;
+
+// The `rust-toast` program and its protocol (`--features cli`).
+#[cfg(feature = "cli")]
+mod cli_bin;
+#[cfg(feature = "cli")]
+mod protocol;
