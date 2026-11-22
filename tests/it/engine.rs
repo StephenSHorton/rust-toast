@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use toast::engine::{Engine, Look, Mouse, Surface, Wheel};
-use toast::layout::{CARD_MARGIN_DIP, CARD_WIDTH_DIP, Part, Rect, px};
+use toast::engine::{CLEAR_KEY, Engine, Look, Mouse, Surface, Wheel};
+use toast::layout::{CARD_GAP_DIP, CARD_MARGIN_DIP, CARD_WIDTH_DIP, CLEAR_H_DIP, Part, Rect, px};
 use toast::note::{FADE_OUT, FULL_ALPHA};
 use toast::{
     Action, CORNER_BOTTOM_RIGHT, CORNER_TOP_RIGHT, Config, DARK, Kind, LIGHT, Motion, Note,
@@ -603,12 +603,24 @@ fn confetti_bursts_from_placed_success_cards_only_when_on() {
 
 /// An engine with n sticky cards in corner, landed.
 fn stack(n: usize, corner: &str, s: &mut Rec, t0: Instant) -> (Engine, Vec<u64>) {
+    stack_with(n, corner, true, s, t0)
+}
+
+/// n sticky cards in corner, with or without the "Clear all" button.
+fn stack_with(
+    n: usize,
+    corner: &str,
+    clear_all: bool,
+    s: &mut Rec,
+    t0: Instant,
+) -> (Engine, Vec<u64>) {
     let e = Engine::new();
     e.configure(Config {
         motion: Motion {
             max_cards: 40,
             ..Motion::default()
         },
+        clear_all,
         ..Config::default()
     });
     e.set_options(Options {
@@ -782,6 +794,8 @@ fn moving_between_cards_keeps_the_stack_open() {
 }
 
 /// A short work area: 12 title-only cards (52 px a row) can't all fit.
+/// Without the "Clear all" button, whose row takes room of its own
+/// (`clear_all_takes_its_row_from_a_crowded_stack`).
 fn crowded(corner: &str, s: &mut Rec, t0: Instant) -> (Engine, Vec<u64>) {
     s.work = Rect {
         l: 0,
@@ -789,7 +803,7 @@ fn crowded(corner: &str, s: &mut Rec, t0: Instant) -> (Engine, Vec<u64>) {
         r: 1920,
         b: 400,
     };
-    stack(12, corner, s, t0)
+    stack_with(12, corner, false, s, t0)
 }
 
 fn inside(r: Rect, work: Rect) -> bool {
@@ -1192,7 +1206,9 @@ fn after_a_throw_the_stack_stays_open_a_moment() {
     let start = s.at(k[4]);
     let t = drag(&e, &mut s, k[4], &[(40, 0), (150, 0)], ms(200), t);
     // The throw carries the pointer off the stack.
-    s.cursor = Some((start.0 + 210, start.1 + 20));
+    // (Past the card column: where the thrown card was, the "Clear all"
+    // row now holds the stack open.)
+    s.cursor = Some((start.0 + 400, start.1 + 20));
     assert!(release(&e, &mut s, k[4], 150, 0, start, t));
     e.sync(&mut s, t);
     assert!(e.is_open(), "held open after the throw");
@@ -1551,7 +1567,7 @@ fn the_frames_and_the_wheel_hook_stop_after_the_throw_hold() {
     let t = t + SETTLE;
     let start = s.at(k[4]);
     let t = drag(&e, &mut s, k[4], &[(40, 0), (150, 0)], ms(200), t);
-    s.cursor = Some((start.0 + 210, start.1 + 20));
+    s.cursor = Some((start.0 + 400, start.1 + 20));
     assert!(release(&e, &mut s, k[4], 150, 0, start, t));
     e.sync(&mut s, t);
     assert!(s.frames && s.hovered, "held open");
@@ -1688,4 +1704,338 @@ fn a_card_sliding_under_a_still_cursor_off_the_stack_does_not_open_it() {
     e.mouse(&mut s, n, Mouse::Move, cx - at.l, cy - at.t, t + ms(30));
     assert!(!e.is_open(), "off the stack: stays folded");
     assert!(!s.hovered);
+}
+
+// ---- "Clear all" (card #995): dismiss_all and the button past the open
+// stack ----
+
+/// Hovers the newest card open and lets everything land.
+fn open_on_newest(e: &Engine, s: &mut Rec, k: &[u64], t: Instant) -> Instant {
+    let newest = *k.last().unwrap();
+    let (l, top) = s.at(newest);
+    s.cursor = Some((l + 10, top + 10));
+    e.mouse(s, newest, Mouse::Move, 10, 10, t);
+    e.frame(s, t + SETTLE);
+    t + SETTLE
+}
+
+#[test]
+fn dismiss_all_takes_every_card_and_runs_each_dismiss() {
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let e = Engine::new();
+    let (tx, rx) = mpsc::channel();
+    for (i, sticky) in [(0u64, true), (1, false), (2, true)] {
+        let tx = tx.clone();
+        e.post(
+            Note {
+                sticky,
+                on_dismiss: Some(std::sync::Arc::new(move || tx.send(i).unwrap())),
+                ..note(&format!("n{i}"))
+            },
+            t0,
+        );
+    }
+    e.sync(&mut s, t0);
+    e.frame(&mut s, t0 + SETTLE);
+    let k = e.keys();
+    let before: Vec<Rect> = k.iter().map(|x| rect_of(&s, *x)).collect();
+
+    let t = t0 + SETTLE;
+    assert!(e.dismiss_all());
+    assert!(e.notes().is_empty(), "out of the model at once");
+    let mut got: Vec<u64> = (0..3)
+        .map(|_| rx.recv_timeout(Duration::from_secs(2)).expect("a dismiss"))
+        .collect();
+    got.sort();
+    assert_eq!(got, [0, 1, 2], "every card's on_dismiss, sticky ones too");
+    assert!(rx.try_recv().is_err(), "once each");
+
+    // The normal exit: each slides toward the screen edge as it fades.
+    e.sync(&mut s, t);
+    e.frame(&mut s, t + ms(60));
+    for (x, b) in k.iter().zip(&before) {
+        let r = rect_of(&s, *x);
+        assert!(r.l > b.l, "slides toward the right edge");
+        assert!(s.wins[x].alpha < FULL_ALPHA, "fading");
+    }
+    e.frame(&mut s, t + SETTLE);
+    assert!(s.wins.is_empty(), "all gone once the exits play out");
+    assert!(!e.visible());
+    assert!(!e.dismiss_all(), "nothing left to dismiss");
+}
+
+#[test]
+fn clear_all_shows_past_the_newest_card_only_while_open_with_two_or_more() {
+    for corner in [CORNER_BOTTOM_RIGHT, CORNER_TOP_RIGHT] {
+        let mut s = Rec::new(1.5);
+        let t0 = Instant::now();
+        let (e, k) = stack(3, corner, &mut s, t0);
+        assert!(!s.wins.contains_key(&CLEAR_KEY), "none at rest");
+
+        let t = open_on_newest(&e, &mut s, &k, t0 + SETTLE);
+        let look = s.wins[&CLEAR_KEY].look.clone().expect("drawn");
+        let clear = look.clear.expect("drawn as the button");
+        assert_eq!(clear.count, 3);
+        assert!(clear.label.r <= clear.count_at.l && clear.count_at.r <= clear.x.l);
+        assert!(s.wins[&CLEAR_KEY].shown);
+        assert_eq!(s.wins[&CLEAR_KEY].alpha, FULL_ALPHA);
+        assert_eq!(
+            s.stacked.last(),
+            Some(&CLEAR_KEY),
+            "over the cards, never under one"
+        );
+
+        // A gap past the newest card, at the corner's side, 30 dip tall.
+        let (b, newest) = (rect_of(&s, CLEAR_KEY), rect_of(&s, k[2]));
+        let gap = px(CARD_GAP_DIP, 1.5);
+        if corner == CORNER_TOP_RIGHT {
+            assert_eq!(b.t, newest.b + gap, "below the newest in a top corner");
+        } else {
+            assert_eq!(b.b, newest.t - gap, "above the newest in a bottom corner");
+        }
+        assert_eq!(b.r, newest.r, "right-aligned with the cards");
+        assert!(b.r - b.l < newest.r - newest.l, "narrower than a card");
+        assert_eq!(b.b - b.t, px(CLEAR_H_DIP, 1.5));
+        assert_eq!(e.slot(CLEAR_KEY).unwrap().0, b);
+
+        // Off the stack: it folds and the button slides out with the rest.
+        s.cursor = Some((10, 10));
+        e.frame(&mut s, t);
+        assert!(!e.is_open());
+        assert!(s.wins.contains_key(&CLEAR_KEY), "playing its exit");
+        e.frame(&mut s, t + SETTLE);
+        assert!(!s.wins.contains_key(&CLEAR_KEY), "gone at rest");
+        assert!(s.destroyed.contains(&CLEAR_KEY));
+    }
+
+    // One card: no button.
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let (e, k) = stack(1, CORNER_BOTTOM_RIGHT, &mut s, t0);
+    open_on_newest(&e, &mut s, &k, t0 + SETTLE);
+    assert!(e.is_open());
+    assert!(!s.wins.contains_key(&CLEAR_KEY), "one card has its own x");
+}
+
+#[test]
+fn moving_from_a_card_onto_clear_all_keeps_the_stack_open() {
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let (e, k) = stack(3, CORNER_BOTTOM_RIGHT, &mut s, t0);
+    let t = open_on_newest(&e, &mut s, &k, t0 + SETTLE);
+    let (b, newest) = (rect_of(&s, CLEAR_KEY), rect_of(&s, k[2]));
+
+    // Up off the newest card into the gap: its leave comes first.
+    s.cursor = Some((b.r - 5, newest.t - 2));
+    e.mouse(&mut s, k[2], Mouse::Leave, 0, 0, t);
+    assert!(e.is_open(), "the gap to the button is the stack");
+    e.frame(&mut s, t + ms(16));
+    assert!(e.is_open());
+
+    // Onto the button.
+    s.cursor = Some((b.r - 5, b.t + 5));
+    let (x, y) = s.local(CLEAR_KEY, b.r - 5, b.t + 5);
+    e.mouse(&mut s, CLEAR_KEY, Mouse::Move, x, y, t + ms(32));
+    e.frame(&mut s, t + ms(48));
+    assert!(e.is_open(), "the button holds the stack open");
+    assert!(
+        e.over_stack(b.r - 5, b.t + 5),
+        "the wheel hook counts it too"
+    );
+    let look = s.wins[&CLEAR_KEY].look.clone().unwrap();
+    assert!(look.hovered && look.hot == Part::Body && look.hand_cursor());
+    for x in &k {
+        assert!(!e.slot(*x).unwrap().1, "every card stays in full");
+    }
+
+    // And back down onto the cards.
+    e.mouse(&mut s, CLEAR_KEY, Mouse::Leave, 0, 0, t + ms(64));
+    s.cursor = Some((newest.l + 10, newest.t + 10));
+    e.mouse(&mut s, k[2], Mouse::Move, 10, 10, t + ms(80));
+    e.frame(&mut s, t + ms(96));
+    assert!(e.is_open());
+    assert!(!s.wins[&CLEAR_KEY].look.clone().unwrap().hovered);
+
+    // Off the button away from the stack folds it.
+    let (x, y) = s.local(CLEAR_KEY, b.r - 5, b.t + 5);
+    e.mouse(&mut s, CLEAR_KEY, Mouse::Move, x, y, t + ms(112));
+    s.cursor = Some((b.r - 5, b.t - 40));
+    e.mouse(&mut s, CLEAR_KEY, Mouse::Leave, 0, 0, t + ms(128));
+    assert!(!e.is_open(), "past the button is off the stack");
+}
+
+#[test]
+fn clicking_clear_all_dismisses_every_card() {
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let (e, k, rx) = dismissable(4, &mut s, t0);
+    let t = open_on_newest(&e, &mut s, &k, t0 + SETTLE);
+    let b = rect_of(&s, CLEAR_KEY);
+    let (x, y) = s.local(CLEAR_KEY, b.l + 10, b.t + 10);
+    s.cursor = Some((b.l + 10, b.t + 10));
+    e.mouse(&mut s, CLEAR_KEY, Mouse::Move, x, y, t);
+    assert!(!e.mouse(&mut s, CLEAR_KEY, Mouse::Down, x, y, t));
+    assert!(
+        e.mouse(&mut s, CLEAR_KEY, Mouse::Up, x, y, t + ms(80)),
+        "the click took cards: the platform syncs"
+    );
+    assert!(e.notes().is_empty());
+    let mut got: Vec<u64> = (0..4)
+        .map(|_| rx.recv_timeout(Duration::from_secs(2)).unwrap())
+        .collect();
+    got.sort();
+    assert_eq!(got, [0, 1, 2, 3], "each card's on_dismiss");
+
+    e.sync(&mut s, t + ms(80));
+    assert!(!e.is_open(), "nothing left to hold open");
+    e.frame(&mut s, t + ms(80) + SETTLE);
+    assert!(s.wins.is_empty(), "cards and button gone");
+    assert!(!s.frames, "at rest");
+
+    // A press dragged off the button and released is no click.
+    let (e, k, _rx) = dismissable(2, &mut s, t0);
+    let t = open_on_newest(&e, &mut s, &k, t0 + SETTLE);
+    let b = rect_of(&s, CLEAR_KEY);
+    let (x, y) = s.local(CLEAR_KEY, b.l + 10, b.t + 10);
+    e.mouse(&mut s, CLEAR_KEY, Mouse::Move, x, y, t);
+    e.mouse(&mut s, CLEAR_KEY, Mouse::Down, x, y, t);
+    assert!(!e.mouse(&mut s, CLEAR_KEY, Mouse::Up, x, -20, t));
+    assert!(!e.mouse(&mut s, CLEAR_KEY, Mouse::RightUp, x, y, t));
+    assert_eq!(e.notes().len(), 2);
+}
+
+#[test]
+fn clear_all_counts_the_cards_and_goes_at_one() {
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let (e, k) = stack(3, CORNER_BOTTOM_RIGHT, &mut s, t0);
+    let t = open_on_newest(&e, &mut s, &k, t0 + SETTLE);
+    let w3 = rect_of(&s, CLEAR_KEY);
+    e.post(note("n3"), t);
+    e.sync(&mut s, t);
+    e.frame(&mut s, t + SETTLE);
+    let clear = s.wins[&CLEAR_KEY].look.clone().unwrap().clear.unwrap();
+    assert_eq!(clear.count, 4, "re-measured for the new count");
+    let k4 = e.keys()[3];
+    let (b, newest) = (rect_of(&s, CLEAR_KEY), rect_of(&s, k4));
+    assert_eq!(
+        b.b,
+        newest.t - px(CARD_GAP_DIP, 1.0),
+        "moved past the new card"
+    );
+    assert_eq!(b.r, w3.r);
+
+    // Down to one card: the button goes, the stack stays open.
+    let t = t + SETTLE;
+    let keys = e.keys();
+    for x in &keys[..3] {
+        assert!(e.click(*x, Part::Close));
+    }
+    e.sync(&mut s, t);
+    // The pointer is on the last card (its own leave and move aside).
+    let last = e.slot(keys[3]).unwrap().0;
+    s.cursor = Some((last.l + 10, last.t + 10));
+    e.frame(&mut s, t + SETTLE);
+    assert!(e.is_open());
+    assert!(!s.wins.contains_key(&CLEAR_KEY));
+}
+
+#[test]
+fn clear_all_off_shows_no_button() {
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let (e, k) = stack_with(3, CORNER_BOTTOM_RIGHT, false, &mut s, t0);
+    open_on_newest(&e, &mut s, &k, t0 + SETTLE);
+    assert!(e.is_open());
+    assert!(!s.wins.contains_key(&CLEAR_KEY));
+    assert!(!e.config().clear_all);
+    assert!(Config::default().clear_all, "on by default");
+
+    // Turned on while open: it shows at the next sync.
+    e.configure(Config {
+        motion: Motion {
+            max_cards: 40,
+            ..Motion::default()
+        },
+        ..Config::default()
+    });
+    let t = t0 + SETTLE * 3;
+    e.sync(&mut s, t);
+    e.mouse(&mut s, k[2], Mouse::Move, 10, 10, t);
+    e.frame(&mut s, t + SETTLE);
+    assert!(s.wins.contains_key(&CLEAR_KEY));
+}
+
+#[test]
+fn clear_all_takes_its_row_from_a_crowded_stack() {
+    let mut s = Rec::new(1.0);
+    s.work = Rect {
+        l: 0,
+        t: 0,
+        r: 1920,
+        b: 400,
+    };
+    let t0 = Instant::now();
+    let (e, k) = stack(12, CORNER_BOTTOM_RIGHT, &mut s, t0);
+    open_on_newest(&e, &mut s, &k, t0 + SETTLE);
+    // Room 360 less the row (30 + 8): three cards fit between the decks.
+    assert_eq!(e.scroll(), Some((9, 9)));
+    for x in k.iter().chain([&CLEAR_KEY]) {
+        assert!(inside(rect_of(&s, *x), s.work), "on screen");
+    }
+    let (b, newest) = (rect_of(&s, CLEAR_KEY), rect_of(&s, k[11]));
+    assert!(b.b <= newest.t, "past the newest");
+}
+
+#[test]
+fn clear_all_sliding_under_a_still_pointer_takes_no_click_until_it_moves() {
+    // Top-right: once the newest card goes, the button slides up into its
+    // place, right under that card's x.
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let (e, k, rx) = dismissable(3, &mut s, t0);
+    e.set_options(Options {
+        corner: CORNER_TOP_RIGHT.into(),
+        ..Options::default()
+    });
+    e.rehome();
+    e.sync(&mut s, t0);
+    e.frame(&mut s, t0 + SETTLE);
+    let t = open_on_newest(&e, &mut s, &k, t0 + SETTLE);
+    let newest = rect_of(&s, k[2]);
+    let (xx, xy) = (newest.r - 17, newest.t + 17); // the x's middle
+    s.cursor = Some((xx, xy));
+    let (lx, ly) = s.local(k[2], xx, xy);
+    e.mouse(&mut s, k[2], Mouse::Move, lx, ly, t);
+    e.mouse(&mut s, k[2], Mouse::Down, lx, ly, t);
+    assert!(e.mouse(&mut s, k[2], Mouse::Up, lx, ly, t + ms(60)));
+    e.sync(&mut s, t + ms(60));
+    e.frame(&mut s, t + ms(60) + SETTLE);
+    let t = t + ms(60) + SETTLE;
+    assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), 2);
+    let b = rect_of(&s, CLEAR_KEY);
+    assert!(b.has(xx, xy), "the button is now under the pointer");
+
+    // The OS's move in place (a window slid under it) and a second click:
+    // nothing.
+    let (x, y) = s.local(CLEAR_KEY, xx, xy);
+    e.mouse(&mut s, CLEAR_KEY, Mouse::Move, x, y, t);
+    let look = s.wins[&CLEAR_KEY].look.clone().unwrap();
+    assert!(!look.hand_cursor() && look.hot == Part::None, "not lit");
+    e.mouse(&mut s, CLEAR_KEY, Mouse::Down, x, y, t);
+    assert!(!e.mouse(&mut s, CLEAR_KEY, Mouse::Up, x, y, t + ms(60)));
+    assert_eq!(e.notes().len(), 2, "the double click cleared nothing");
+    assert!(e.is_open());
+
+    // A real move arms it; then a click clears.
+    e.mouse(&mut s, CLEAR_KEY, Mouse::Move, x - 6, y + 2, t + ms(200));
+    let look = s.wins[&CLEAR_KEY].look.clone().unwrap();
+    assert!(
+        look.hand_cursor() && look.hot == Part::Body,
+        "lit once moved"
+    );
+    e.mouse(&mut s, CLEAR_KEY, Mouse::Down, x - 6, y + 2, t + ms(220));
+    assert!(e.mouse(&mut s, CLEAR_KEY, Mouse::Up, x - 6, y + 2, t + ms(280)));
+    assert!(e.notes().is_empty());
 }

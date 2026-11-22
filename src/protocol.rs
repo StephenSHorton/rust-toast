@@ -71,6 +71,9 @@ pub enum Command {
     Close {
         id: String,
     },
+    /// Dismisses every card, as if each one's x were pressed: one
+    /// [`Event::Dismiss`] per card, `how` [`How::User`].
+    DismissAll,
     /// Reports the ids of the cards up ([`Event::Cards`]).
     List,
     Quit,
@@ -85,6 +88,7 @@ pub struct ConfigureCmd {
     pub corner_radius: Option<f64>,
     pub glass: Option<f64>,
     pub stripe: Option<bool>,
+    pub clear_all: Option<bool>,
     pub capture_exclude: Option<bool>,
     pub shown: Option<usize>,
     pub max_cards: Option<usize>,
@@ -193,8 +197,9 @@ pub struct ActionCmd {
 #[serde(rename_all = "snake_case")]
 pub enum How {
     /// The person dismissed it: the x, a right or Control click, a sideways
-    /// throw, or a body click on a card with `clickable: false`. The
-    /// library doesn't tell these apart.
+    /// throw, a body click on a card with `clickable: false`, the "Clear
+    /// all" button, or a `dismiss_all` command. The library doesn't tell
+    /// these apart.
     User,
     /// It expired.
     Timeout,
@@ -379,6 +384,9 @@ impl ConfigureCmd {
         }
         if let Some(s) = self.stripe {
             c.stripe = s;
+        }
+        if let Some(b) = self.clear_all {
+            c.clear_all = b;
         }
         if let Some(x) = self.capture_exclude {
             c.capture_exclude = x;
@@ -641,6 +649,8 @@ pub trait Backend {
     fn options(&self) -> Options;
     fn post(&self, n: Note);
     fn close(&self, id: &str);
+    /// Dismisses every card, running each one's `on_dismiss`.
+    fn dismiss_all(&self);
 }
 
 /// The process's cards: [`crate::post`] and friends.
@@ -664,6 +674,9 @@ impl Backend for Global {
     }
     fn close(&self, id: &str) {
         crate::close(id)
+    }
+    fn dismiss_all(&self) {
+        crate::dismiss_all()
     }
 }
 
@@ -878,6 +891,11 @@ impl<B: Backend> Session<B> {
                 let id = bound(&id, MAX_ID);
                 if on {
                     doing(Doing::Closing, || self.backend.close(&id));
+                }
+            }
+            Command::DismissAll => {
+                if on {
+                    self.backend.dismiss_all();
                 }
             }
             Command::Post(p) => self.post(p, on)?,

@@ -64,10 +64,11 @@ can talk to an older program. Fields left out take their defaults (for
 
 | `cmd` | Fields | What |
 | --- | --- | --- |
-| `configure` | `app_name`, `scheme` (`light`, `dark`, `system`), `corner_radius` (dip, 0 to 24), `glass` (0 to 1; 1 is solid), `stripe`, `capture_exclude`, `shown`, `max_cards`, `light`, `dark` | The look. Set it once at startup; cards up restyle. `light` and `dark` take `background`, `foreground`, `muted`, `border` and `accent` (`info`, `success`, `warn`, `error`), each `#rrggbb`. |
+| `configure` | `app_name`, `scheme` (`light`, `dark`, `system`), `corner_radius` (dip, 0 to 24), `glass` (0 to 1; 1 is solid), `stripe`, `clear_all`, `capture_exclude`, `shown`, `max_cards`, `light`, `dark` | The look. Set it once at startup; cards up restyle. `clear_all` (default true) shows the *Clear all* button on the open stack (below). `light` and `dark` take `background`, `foreground`, `muted`, `border` and `accent` (`info`, `success`, `warn`, `error`), each `#rrggbb`. |
 | `set_options` | `enabled`, `corner` (`top-right`, `bottom-right`, `top-left`, `bottom-left`), `sound`, `volume` (0 to 1), `confetti` | The person's settings. `enabled: false` takes every card down. |
 | `post` | see below | Shows a card, or replaces the one up with the same `id`. |
 | `close` | `id` | Takes the card down (reported as `dismiss` with `how: "closed"`). |
+| `dismiss_all` | | Takes every card down, sticky ones too, as if the person pressed each one's x: one `dismiss` with `how: "user"` per card. With none up it does nothing. |
 | `list` | | Reports the ids of the cards up (`cards`). |
 | `quit` | | Exits. |
 
@@ -88,6 +89,12 @@ can talk to an older program. Fields left out take their defaults (for
 | `actions` | | Up to two buttons, `{"id": "...", "label": "..."}`; the first is primary. Extra ones are dropped. An empty id is the button's index (`"0"`, `"1"`); an empty label shows the id. |
 
 Any click on a card (a button, the body, the x) takes it down.
+
+While the person hovers the stack open with two or more cards up, a small
+*Clear all · N* button shows past the newest card. Clicking it is
+`dismiss_all`: every card reports `dismiss` with `how: "user"`.
+`configure` with `"clear_all": false` turns the button off; the
+`dismiss_all` command works either way.
 
 ## Events
 
@@ -110,8 +117,9 @@ and a card still up when the program exits, which reports nothing.
 `how`:
 
 - `user`: the person dismissed it: the x, a right or Control click, a
-  sideways throw, or a body click with `clickable: false`. The library
-  does not tell these apart.
+  sideways throw, a body click with `clickable: false`, or the *Clear all*
+  button; also every card of a `dismiss_all` command. The library does not
+  tell these apart.
 - `timeout`: it expired.
 - `closed`: a `close` command, or `set_options` with `enabled: false`.
 - `pushed`: a post past `max_cards` (default 5) pushed it off the stack
@@ -143,7 +151,7 @@ and a card still up when the program exits, which reports nothing.
 
 ```text
 > (from the program)  < (from the app)
-> {"event":"ready","version":"0.4.1","protocol":1,"platform":"macos","supported":true}
+> {"event":"ready","version":"0.5.0","protocol":1,"platform":"macos","supported":true}
 < {"cmd":"configure","app_name":"Hearth","scheme":"system","corner_radius":10}
 < {"cmd":"set_options","corner":"bottom-right","volume":0.4}
 < {"cmd":"post","id":"update","title":"An update is ready","body":"Restart now, or it installs when you quit.","sticky":true,"actions":[{"id":"restart","label":"Restart"},{"id":"later","label":"Later"}]}
@@ -184,4 +192,10 @@ piped and keep the pipe open; with stdin at `/dev/null` (Node's
 
 `protocol` goes up only when a command or event changes meaning. New
 optional fields, commands and events don't bump it; clients ignore what
-they don't know.
+they don't know. An older program answers a command it doesn't know with
+an `error` event and carries on.
+
+Added without a bump:
+
+- 0.5.0: the `dismiss_all` command, `configure`'s `clear_all`, and the
+  *Clear all* button.

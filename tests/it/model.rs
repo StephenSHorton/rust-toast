@@ -267,6 +267,7 @@ fn spec(corner: &str) -> StackSpec<'_> {
         depth: 2,
         shrink: 0.05,
         fade: 0.22,
+        clear: 0,
     }
 }
 

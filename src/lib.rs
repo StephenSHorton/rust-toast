@@ -51,7 +51,7 @@ use std::sync::LazyLock;
 use std::time::Instant;
 
 pub use config::{Accents, Color, Config, DARK, Kind, LIGHT, Motion, Palette, Scheme, hex, rgb};
-pub use engine::{Engine, Look, Mouse, Surface, Wheel};
+pub use engine::{CLEAR_KEY, Clear, Engine, Look, Mouse, Surface, Wheel};
 pub use note::{
     Action, CORNER_BOTTOM_LEFT, CORNER_BOTTOM_RIGHT, CORNER_TOP_LEFT, CORNER_TOP_RIGHT, Callback,
     Image, Note, Options,
@@ -121,6 +121,15 @@ pub fn post(n: Note) {
 /// Removes the card with id, if it is up, without running its callbacks.
 pub fn close(id: &str) {
     if platform::DRAWS && ENGINE.close(id) {
+        platform::wake();
+    }
+}
+
+/// Dismisses every card, sticky ones too, as if each one's x were
+/// pressed: each slides out and its `on_dismiss` runs (on its own thread).
+/// The "Clear all" button on the open stack calls it ([`Config::clear_all`]).
+pub fn dismiss_all() {
+    if platform::DRAWS && ENGINE.dismiss_all() {
         platform::wake();
     }
 }

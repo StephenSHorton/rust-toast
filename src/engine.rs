@@ -30,9 +30,10 @@ use std::time::{Duration, Instant};
 
 use crate::config::{Config, Ease, Kind, Motion, Palette};
 use crate::layout::{
-    CARD_GAP_DIP, CARD_MARGIN_DIP, CARD_WIDTH_DIP, MAX_BODY_LINES, Part, Pose, Rect, StackSpec,
-    TEXT_LEFT_DIP, TEXT_RIGHT_DIP, arrange, bounds, button_rects, card_height_dip, close_rect,
-    ease, hit_part, is_left, is_top, px, thumb_rect, thumb_size_dip,
+    CARD_GAP_DIP, CARD_MARGIN_DIP, CARD_WIDTH_DIP, CLEAR_H_DIP, CLEAR_LABEL, MAX_BODY_LINES, Part,
+    Pose, Rect, SHOWN_Z, StackSpec, TEXT_LEFT_DIP, TEXT_RIGHT_DIP, arrange, bounds, button_rects,
+    card_height_dip, clear_count_text, clear_parts, close_rect, ease, hit_part, is_left, is_top,
+    px, thumb_rect, thumb_size_dip,
 };
 use crate::note::{Callback, FULL_ALPHA, Image, Note, Options, Stack, clean};
 use crate::sound::{Sound, sound_for};
@@ -79,7 +80,30 @@ pub struct Look {
     /// Folded behind a deck's front card: draw only the card's body (its
     /// background and border), no stripe, icon, text or buttons.
     pub folded: bool,
+    /// This window is the "Clear all" button ([`CLEAR_KEY`]), not a card:
+    /// draw it instead, in the card's palette, radius and glass.
+    pub clear: Option<Clear>,
 }
+
+/// The "Clear all · N" button's content: how many cards it clears and
+/// where its pieces go (px, in the window as drawn). The whole window is
+/// the button; `hot` is [`Part::Body`] under the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Clear {
+    pub count: usize,
+    /// "Clear all", at the button font in the foreground colour.
+    pub label: Rect,
+    /// "· N" ([`crate::layout::clear_count_text`]), muted.
+    pub count_at: Rect,
+    /// The x.
+    pub x: Rect,
+}
+
+/// The key of the "Clear all" button's window. Card keys count up from 1
+/// and never reach it.
+pub const CLEAR_KEY: u64 = u64::MAX;
+/// The button's stacking order: over the cards in full.
+const CLEAR_Z: i32 = SHOWN_Z + 1000;
 
 impl Look {
     /// The cursor a platform shows over the card.
@@ -295,6 +319,14 @@ struct CardWin {
     pressed: Part,
     /// The hover state last drawn.
     hovered: bool,
+    /// The "Clear all" button's content (its window only).
+    clear: Option<Clear>,
+    /// The button takes clicks: false from when it appears or moves until
+    /// the pointer really moves (`still` is where the pointer was then),
+    /// so the click after a card's x, landing where the button just slid
+    /// in under a still pointer, clears nothing.
+    armed: bool,
+    still: Option<(i32, i32)>,
 
     /// Where the layout puts it, folded or not, and its stacking order.
     slot: Pose,
@@ -375,6 +407,14 @@ struct Ui {
     restack: bool,
     framing: bool,
     told_open: bool,
+    /// The look the last sync had (the "Clear all" button follows it) and
+    /// whether the button is on.
+    cfg: Config,
+    cfg_rev: u64,
+    dark: bool,
+    clear_on: bool,
+    /// The button's row while it shows ([`crate::layout::Arranged::clear`]).
+    clear: Option<Rect>,
 }
 
 /// What a post did.
@@ -441,7 +481,7 @@ impl Engine {
                 hover_key: 0,
                 ticking: false,
                 corner: Options::default().corner,
-                motion: cfg.motion,
+                motion: cfg.motion.clone(),
                 reduce: false,
                 order: vec![],
                 open: false,
@@ -456,6 +496,11 @@ impl Engine {
                 restack: false,
                 framing: false,
                 told_open: false,
+                cfg: cfg.clone(),
+                cfg_rev: 0,
+                dark: true,
+                clear_on: cfg.clear_all,
+                clear: None,
             }),
         }
     }
@@ -529,6 +574,24 @@ impl Engine {
     /// was up (sync).
     pub fn close(&self, id: &str) -> bool {
         lock(&self.shared).stack.close_id(id)
+    }
+
+    /// Takes every card out of the model, sticky ones and ones already
+    /// fading too, as if each one's x were pressed: each `on_dismiss` gets
+    /// its own thread once the lock is free, and the next sync slides them
+    /// all out. True when any was up (sync).
+    pub fn dismiss_all(&self) -> bool {
+        let (cards, prefix) = {
+            let mut s = lock(&self.shared);
+            (std::mem::take(&mut s.stack.cards), s.cfg.log_prefix())
+        };
+        if cards.is_empty() {
+            return false;
+        }
+        for c in cards {
+            run_callback(c.note.on_dismiss.clone(), &prefix);
+        }
+        true
     }
 
     /// A display or work-area change: re-place the stack on the next sync.
@@ -668,8 +731,13 @@ impl Engine {
         ui.motion = cfg.motion.clone();
         let os_dark = cfg.scheme == crate::config::Scheme::System && surf.os_dark();
         let dark = cfg.is_dark(os_dark);
+        ui.cfg = cfg.clone();
+        ui.cfg_rev = cfg_rev;
+        ui.dark = dark;
+        ui.clear_on = cfg.clear_all;
 
-        for cw in ui.wins.values_mut() {
+        // The button is not in the model: apply keeps it.
+        for cw in ui.wins.values_mut().filter(|c| c.key != CLEAR_KEY) {
             cw.in_model = false;
         }
         let hover_key = ui.hover_key;
@@ -720,7 +788,7 @@ impl Engine {
         let corner = ui.corner.clone();
         let motion = ui.motion.clone();
         for cw in ui.wins.values_mut() {
-            if !cw.in_model && !cw.ghost {
+            if !cw.in_model && !cw.ghost && cw.key != CLEAR_KEY {
                 exit(cw, None, &corner, sc, &motion, now);
             }
         }
@@ -804,6 +872,9 @@ impl Engine {
         y: i32,
         now: Instant,
     ) -> bool {
+        if key == CLEAR_KEY {
+            return self.clear_mouse(surf, ev, x, y, now);
+        }
         let mut guard = lock(&self.ui);
         let ui = &mut *guard;
         let Some(cw) = ui.wins.get(&key) else {
@@ -976,6 +1047,85 @@ impl Engine {
         }
     }
 
+    /// A mouse event on the "Clear all" button: it hovers like a card (and
+    /// keeps the stack open), and a press released on it dismisses every
+    /// card. True when that took cards (sync).
+    fn clear_mouse(&self, surf: &mut dyn Surface, ev: Mouse, x: i32, y: i32, now: Instant) -> bool {
+        let mut guard = lock(&self.ui);
+        let ui = &mut *guard;
+        let Some(cw) = ui.wins.get_mut(&CLEAR_KEY) else {
+            return false;
+        };
+        if cw.ghost {
+            if ui.hover_key == CLEAR_KEY && ev == Mouse::Leave {
+                ui.hover_key = 0;
+            }
+            return false;
+        }
+        let (sx, sy) = (cw.rect.l + x, cw.rect.t + y);
+        let inside = x >= 0 && y >= 0 && x < cw.rect.r - cw.rect.l && y < cw.rect.b - cw.rect.t;
+        let mut hover = ui.hover_key;
+        let mut fire = false;
+        match ev {
+            Mouse::Move if ui.bounds.has(sx, sy) => {
+                hover = CLEAR_KEY;
+                if !cw.armed {
+                    // A real move (the OS also sends one, in place, when a
+                    // window slides under a still pointer) arms it.
+                    match cw.still {
+                        Some((px, py)) if (sx - px).abs() + (sy - py).abs() > 1 => {
+                            cw.armed = true;
+                        }
+                        Some(_) => {}
+                        None => cw.still = Some((sx, sy)),
+                    }
+                }
+                cw.hot = if cw.armed { Part::Body } else { Part::None };
+                ui.enter(now);
+            }
+            Mouse::Move => {
+                // Passing under a still cursor off the stack (sliding in).
+                if hover == CLEAR_KEY {
+                    hover = 0;
+                }
+                cw.hot = Part::None;
+            }
+            Mouse::Leave => {
+                if hover == CLEAR_KEY {
+                    hover = 0;
+                }
+                cw.hot = Part::None;
+                cw.pressed = Part::None;
+                if hover == 0 {
+                    match surf.cursor() {
+                        Some((cx, cy)) if ui.bounds.has(cx, cy) => {}
+                        _ => ui.leave(now),
+                    }
+                }
+            }
+            Mouse::Down => {
+                cw.pressed = if cw.armed { Part::Body } else { Part::None };
+            }
+            Mouse::Up => {
+                fire = cw.pressed == Part::Body && inside;
+                cw.pressed = Part::None;
+            }
+            Mouse::RightUp | Mouse::Cancel => cw.pressed = Part::None,
+        }
+        if let Some(cw) = ui.wins.get_mut(&CLEAR_KEY) {
+            let hovered = hover == CLEAR_KEY;
+            let redraw = cw.hovered != hovered || ev == Mouse::Move || ev == Mouse::Leave;
+            cw.hovered = hovered;
+            if redraw && cw.drawn.is_some() {
+                surf.draw(&look(cw));
+            }
+        }
+        ui.hover_key = hover;
+        ui.apply(surf, now);
+        drop(guard);
+        fire && self.dismiss_all()
+    }
+
     /// One wheel step over the stack: while it is open with cards hidden
     /// in its decks, moves the window one card (newer for `Up` in a bottom
     /// corner, older in a top one). Steps closer together than
@@ -1050,11 +1200,27 @@ impl Ui {
             depth: m.peek_depth,
             shrink: m.peek_shrink,
             fade: m.peek_fade,
+            clear: if self.clear_on {
+                px(CLEAR_H_DIP, sc)
+            } else {
+                0
+            },
         };
         let a = arrange(&spec, &heights, self.open, self.at);
         self.at = a.at;
         self.max_at = a.max_at;
         self.bounds = bounds(&a.slots);
+        self.clear = a.clear;
+        if let Some(c) = a.clear {
+            // The button's row (and the gap to it) holds the stack open.
+            let b = self.bounds;
+            self.bounds = Rect {
+                l: b.l.min(c.l),
+                t: b.t.min(c.t),
+                r: b.r.max(c.r),
+                b: b.b.max(c.b),
+            };
+        }
         let top = is_top(&self.corner);
         let edge = if is_left(&self.corner) { -1.0 } else { 1.0 };
         for (k, slot) in self.order.iter().zip(&a.slots) {
@@ -1083,6 +1249,7 @@ impl Ui {
     /// time, ends exits that are over, keeps the stacking order, and runs
     /// the frame timer while anything moves or the stack is open.
     fn apply(&mut self, surf: &mut dyn Surface, now: Instant) {
+        self.sync_clear(surf, now);
         let mut moving = false;
         let mut dead = vec![];
         for cw in self.wins.values_mut() {
@@ -1136,13 +1303,14 @@ impl Ui {
         }
 
         // Ghosts in front (a thrown card flies over the rest), then the card
-        // under a drag, then the layout's order.
+        // under a drag, then the layout's order (the "Clear all" button over
+        // the cards, also on its way out).
         let mut zs: Vec<(i32, usize, u64)> = self
             .wins
             .values()
             .filter(|c| c.placed)
             .map(|c| {
-                let z = if c.ghost {
+                let z = if c.ghost && c.key != CLEAR_KEY {
                     i32::MAX
                 } else if c.held {
                     i32::MAX - 1
@@ -1171,6 +1339,82 @@ impl Ui {
         if self.open != self.told_open {
             surf.hovered(self.open);
             self.told_open = self.open;
+        }
+    }
+
+    /// Makes the "Clear all" button's window match the layout: made (and
+    /// fading in from the cards' side) when its row appears, re-measured
+    /// when the count, scale or look changes, moved with the stack, and
+    /// sliding out like a card when the row goes.
+    fn sync_clear(&mut self, surf: &mut dyn Surface, now: Instant) {
+        let Some(row) = self.clear else {
+            if let Some(cw) = self.wins.get_mut(&CLEAR_KEY)
+                && !cw.ghost
+            {
+                exit(cw, None, &self.corner, self.scale, &self.motion, now);
+                cw.in_model = false;
+            }
+            return;
+        };
+        let (sc, n) = (self.scale, self.order.len());
+        if !self.wins.contains_key(&CLEAR_KEY) {
+            let mut cw = new_win(CLEAR_KEY, &self.cfg, self.cfg_rev, self.dark, now);
+            measure_clear(&mut cw, n, sc, surf);
+            if !surf.create(CLEAR_KEY, &cw.cfg, cw.w, cw.h) {
+                return;
+            }
+            cw.hovered = self.hover_key == CLEAR_KEY;
+            self.wins.insert(CLEAR_KEY, cw);
+        }
+        let (dark, cfg_rev) = (self.dark, self.cfg_rev);
+        let cw = self.wins.get_mut(&CLEAR_KEY).expect("made above");
+        if cw.cfg_rev != cfg_rev || cw.dark != dark {
+            cw.cfg = self.cfg.clone();
+            cw.cfg_rev = cfg_rev;
+            cw.dark = dark;
+            cw.drawn = None;
+        }
+        if cw.clear.map(|c| c.count) != Some(n) || cw.scale != sc {
+            measure_clear(cw, n, sc, surf);
+            cw.drawn = None;
+        }
+        // At the corner's side of its row.
+        let x = if is_left(&self.corner) {
+            row.l
+        } else {
+            row.r - cw.w
+        };
+        let slot = Pose {
+            x: x as f64,
+            y: row.t as f64,
+            w: cw.w as f64,
+            h: cw.h as f64,
+            o: 1.0,
+        };
+        if cw.fresh || cw.ghost || cw.slot != slot {
+            // Appeared or moved: maybe under a still pointer.
+            cw.armed = false;
+            cw.still = surf.cursor();
+            cw.hot = Part::None;
+        }
+        cw.slot = slot;
+        cw.z = CLEAR_Z;
+        cw.folded = false;
+        if cw.fresh || cw.ghost {
+            // In from the cards' side, fading up.
+            let from = if cw.fresh {
+                let toward = if is_top(&self.corner) { -1.0 } else { 1.0 };
+                let off = self.motion.enter_offset.min(12.0) * sc;
+                Pose { o: 0.0, ..slot }.shifted(0.0, toward * off)
+            } else {
+                cw.anim.at(now)
+            };
+            cw.fresh = false;
+            cw.ghost = false;
+            cw.in_model = true;
+            cw.anim = Anim::moving(from, slot, now, &self.motion);
+        } else if cw.anim.to != slot {
+            cw.anim = Anim::moving(cw.anim.at(now), slot, now, &self.motion);
         }
     }
 
@@ -1315,6 +1559,9 @@ fn new_win(key: u64, cfg: &Config, cfg_rev: u64, dark: bool, now: Instant) -> Ca
         hot: Part::None,
         pressed: Part::None,
         hovered: false,
+        clear: None,
+        armed: false,
+        still: None,
         slot: Pose::default(),
         folded: false,
         z: 0,
@@ -1400,7 +1647,41 @@ fn look(cw: &CardWin) -> Look {
         hovered: cw.hovered,
         clickable: cw.clickable,
         folded,
+        clear: cw.clear.map(|c| Clear {
+            count: c.count,
+            label: sr(c.label),
+            count_at: sr(c.count_at),
+            x: sr(c.x),
+        }),
     }
+}
+
+/// Sizes the "Clear all" button for n cards at scale sc: its label and
+/// count measured with the button font, so it tracks DPI.
+fn measure_clear(cw: &mut CardWin, n: usize, sc: f64, surf: &mut dyn Surface) {
+    // A failed measure still leaves a button about the right size.
+    let guess = |s: &str| (s.chars().count() as f64 * 7.0 * sc).round() as i32;
+    let count = clear_count_text(n);
+    let lw = surf
+        .label_width(CLEAR_LABEL, sc)
+        .unwrap_or_else(|| guess(CLEAR_LABEL));
+    let cwid = surf
+        .label_width(&count, sc)
+        .unwrap_or_else(|| guess(&count));
+    let ([label, count_at, x], w, h) = clear_parts(lw, cwid, sc);
+    cw.scale = sc;
+    cw.w = w;
+    cw.h = h;
+    cw.radius = px(cw.cfg.corner_radius, sc);
+    cw.title = CLEAR_LABEL.into();
+    cw.body = count;
+    cw.clickable = true;
+    cw.clear = Some(Clear {
+        count: n,
+        label,
+        count_at,
+        x,
+    });
 }
 
 /// Sizes cw for its content at its scale: body lines (measured with the

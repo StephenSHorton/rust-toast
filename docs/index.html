@@ -278,6 +278,7 @@ toast::post(Note {
   <ul class="plain">
     <li><code>toast::set_options</code> takes the user's settings: on or off, corner, sound and volume, confetti.</li>
     <li><code>Note::id</code> replaces a live card in place; <code>toast::close(id)</code> takes it down.</li>
+    <li><code>toast::dismiss_all()</code> takes every card down as if each one's x were pressed; <code>Config::clear_all</code> (on by default) puts a <em>Clear all · N</em> button past the newest card while the stack is hovered open with two or more.</li>
     <li>Cards that aren't <code>sticky</code> expire on their own; hovering the stack pauses them.</li>
     <li><code>Config::capture_exclude</code> (on by default) keeps cards out of screenshots and recordings.</li>
   </ul>

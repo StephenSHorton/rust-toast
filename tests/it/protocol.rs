@@ -108,6 +108,10 @@ impl Backend for &Headless {
         self.e.close(id);
         self.sync();
     }
+    fn dismiss_all(&self) {
+        self.e.dismiss_all();
+        self.sync();
+    }
 }
 
 /// A backend for a system without cards.
@@ -131,6 +135,9 @@ impl Backend for Unsupported {
     }
     fn close(&self, _: &str) {
         panic!("no-op system got close")
+    }
+    fn dismiss_all(&self) {
+        panic!("no-op system got dismiss_all")
     }
 }
 
@@ -660,4 +667,61 @@ fn a_leading_byte_order_mark_is_skipped() {
     );
     // Only at the start of a line.
     assert!(protocol::parse(b"{\"cmd\":\"list\"}\xEF\xBB\xBF").is_err());
+}
+
+#[test]
+fn dismiss_all_reports_one_dismiss_per_card() {
+    assert_eq!(
+        protocol::parse(br#"{"cmd":"dismiss_all"}"#).unwrap(),
+        Command::DismissAll
+    );
+    let h = Headless::new();
+    let (mut s, rx) = session(&h);
+    s.line(br#"{"cmd":"post","id":"a","title":"A","sticky":true}"#);
+    s.line(br#"{"cmd":"post","id":"b","title":"B","actions":[{"id":"go","label":"Go"}]}"#);
+    s.line(br#"{"cmd":"post","id":"c","title":"C"}"#);
+    assert_eq!(drain(&rx), vec![posted("a"), posted("b"), posted("c")]);
+
+    assert_eq!(s.line(br#"{"cmd":"dismiss_all"}"#), Flow::Go);
+    let mut got: Vec<Event> = (0..3).map(|_| next(&rx)).collect();
+    got.sort_by_key(|e| format!("{e:?}"));
+    assert_eq!(
+        got,
+        vec![
+            dismiss("a", How::User),
+            dismiss("b", How::User),
+            dismiss("c", How::User)
+        ],
+        "as if each x were pressed, the sticky card too"
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(drain(&rx), vec![], "one event per card");
+    assert!(h.e.notes().is_empty());
+    assert!(s.ids().is_empty());
+
+    // With nothing up it is nothing.
+    s.line(br#"{"cmd":"dismiss_all"}"#);
+    s.line(br#"{"cmd":"list"}"#);
+    assert_eq!(drain(&rx), vec![Event::Cards { ids: vec![] }]);
+
+    // A system without cards takes it as a no-op.
+    let (emit, rx) = events();
+    let mut s = Session::new(Unsupported, Config::default(), emit);
+    assert_eq!(s.line(br#"{"cmd":"dismiss_all"}"#), Flow::Go);
+    assert_eq!(drain(&rx), vec![]);
+}
+
+#[test]
+fn configure_turns_clear_all_off_and_on() {
+    let h = Headless::new();
+    let (mut s, rx) = session(&h);
+    assert!(h.e.config().clear_all, "on by default");
+    s.line(br#"{"cmd":"configure","clear_all":false}"#);
+    assert!(!h.e.config().clear_all);
+    s.line(br#"{"cmd":"configure","stripe":false}"#);
+    assert!(!h.e.config().clear_all, "left out keeps it");
+    s.line(br#"{"cmd":"configure","clear_all":true}"#);
+    assert!(h.e.config().clear_all);
+    s.line(br#"{"cmd":"configure","clear_all":"yes"}"#);
+    assert!(matches!(&drain(&rx)[..], [Event::Error { .. }]));
 }

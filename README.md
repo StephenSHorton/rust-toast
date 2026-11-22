@@ -26,7 +26,7 @@ v0.2.0. It grew up inside Irori and is shared by suzuri and other apps.
 
 ```toml
 [dependencies]
-rust-toast = { git = "https://github.com/StephenSHorton/rust-toast", tag = "v0.4.1" }
+rust-toast = { git = "https://github.com/StephenSHorton/rust-toast", tag = "v0.5.0" }
 ```
 
 ```rust
@@ -45,7 +45,9 @@ toast::post(Note {
 ```
 
 - `Note::id` replaces a live card in place instead of stacking a new one;
-  `toast::close(id)` takes it down.
+  `toast::close(id)` takes it down (its callbacks don't run).
+- `toast::dismiss_all()` takes every card down, sticky ones too, as if
+  each one's x were pressed: each slides out and its `on_dismiss` runs.
 - `sticky` cards stay until clicked or dismissed; others expire (hovering
   pauses the timer).
 - `toast::set_options` takes the person's settings: on/off, corner, sound and
@@ -54,6 +56,9 @@ toast::post(Note {
   and screen recordings.
 - `Config::stripe` (on by default) draws the kind-coloured bar down the
   card's left edge; off, the icon alone carries the colour.
+- `Config::clear_all` (on by default) shows a **Clear all · N** button past
+  the newest card while the stack is hovered open with two or more cards;
+  clicking it calls `toast::dismiss_all()`. Off, there is no button.
 - `Config::motion` (`toast::Motion`) tunes the stack: past three cards the
   older ones fold into a deck in the corner, hovering opens it, a sideways
   drag throws a card away, and everything animates (see [Motion](#motion)).
@@ -66,7 +71,7 @@ it up 20 s with six cards, enough to fold a deck).
 `rust-toast`, a small program behind the `cli` feature, gives the cards to
 apps not written in Rust. Spawn `rust-toast serve` and keep it running:
 it reads one JSON command a line on stdin (`configure`, `set_options`,
-`post`, `close`, `list`, `quit`) and writes one JSON event a line on
+`post`, `close`, `dismiss_all`, `list`, `quit`) and writes one JSON event a line on
 stdout (`ready`, `posted`, `action`, `click`, `dismiss`, `cards`, `error`).
 It exits when its stdin closes, so it never outlives the app.
 
@@ -96,6 +101,14 @@ The stack is a list with a deck in the corner:
   opening on the newest. The **wheel** (or a vertical drag on a card)
   moves one card per notch; wheel up goes toward the newer cards in a
   bottom corner, toward the older in a top one.
+- **Clear all**: open with two or more cards, a small *Clear all · N*
+  button (N the cards up) sits a gap past the newest card, at the corner's
+  side, in the cards' look. It is part of the stack (moving onto it, or
+  across the gap, keeps the stack open), and a click dismisses every card.
+  When it appears or moves under a still pointer (the newest card's x
+  pressed, say), it takes no click until the pointer moves, so a
+  double-click on that x never clears the rest.
+  Its row comes off the room the open stack has.
 - **Leaving** folds it again at once, except just after a card was thrown
   away: then it waits 1.2 s, time to come back for the next one. Nothing
   expires while the stack is open.

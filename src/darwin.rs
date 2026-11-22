@@ -73,10 +73,11 @@ use objc2_foundation::{
 use crate::ENGINE;
 use crate::confetti::{self, Burst};
 use crate::config::{Color, Config, Kind};
-use crate::engine::{FRAME_MS, Look, Mouse, Surface, TICK_MS, Wheel};
+use crate::engine::{Clear, FRAME_MS, Look, Mouse, Surface, TICK_MS, Wheel};
 use crate::layout::{
-    BODY_GAP_DIP, BODY_SIZE_DIP, BUTTON_SIZE_DIP, ICON_LEFT_DIP, ICON_SIZE_DIP, PAD_TOP_DIP, Part,
-    Rect, TEXT_LEFT_DIP, TEXT_RIGHT_DIP, TITLE_DIP, TITLE_RIGHT_DIP, TITLE_SIZE_DIP, stripe_rect,
+    BODY_GAP_DIP, BODY_SIZE_DIP, BUTTON_SIZE_DIP, CLEAR_LABEL, ICON_LEFT_DIP, ICON_SIZE_DIP,
+    PAD_TOP_DIP, Part, Rect, TEXT_LEFT_DIP, TEXT_RIGHT_DIP, TITLE_DIP, TITLE_RIGHT_DIP,
+    TITLE_SIZE_DIP, clear_count_text, stripe_rect,
 };
 use crate::note::Image;
 
@@ -989,6 +990,10 @@ fn draw_thumb(img: &Image, r: NSRect, border: &NSColor, radius: f64) {
 
 /// The card, as glass (the tint at that opacity) or solid.
 fn draw_card(all: NSRect, l: &Look, glass: Option<f64>) {
+    if let Some(c) = &l.clear {
+        draw_clear(all, l, c, glass);
+        return;
+    }
     let k = l.palette;
     let (w, h) = (all.size.width, all.size.height);
     let accent = rgb(k.accent.for_kind(l.kind));
@@ -1165,6 +1170,54 @@ fn draw_card(all: NSRect, l: &Look, glass: Option<f64>) {
             NSTextAlignment::Center,
         );
     }
+}
+
+/// The "Clear all · N" button past the open stack: the card's body (glass
+/// or solid, and its border), the label in the button font, the count
+/// muted and an x; the whole button takes the hover fill under the cursor.
+fn draw_clear(all: NSRect, l: &Look, c: &Clear, glass: Option<f64>) {
+    let k = l.palette;
+    let radius = l.radius as f64;
+    let hot = l.hot == Part::Body;
+    let shape = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(all, radius, radius);
+    match glass {
+        _ if hot => rgb(k.hover).setFill(),
+        Some(a) => rgba(k.tint, a).setFill(),
+        None => rgb(k.background).setFill(),
+    }
+    shape.fill();
+    fill_box(all, None, Some(&rgb(k.border)), radius);
+
+    let f = font(BUTTON_SIZE_DIP, true);
+    draw_line(
+        CLEAR_LABEL,
+        &f,
+        &rgb(k.foreground),
+        ns_rect(c.label),
+        NSTextAlignment::Left,
+    );
+    draw_line(
+        &clear_count_text(c.count),
+        &f,
+        &rgb(k.muted),
+        ns_rect(c.count_at),
+        NSTextAlignment::Left,
+    );
+    let r = ns_rect(c.x);
+    let (cx, cy) = (
+        r.origin.x + r.size.width / 2.0,
+        r.origin.y + r.size.height / 2.0,
+    );
+    let a = 3.5;
+    let x = NSBezierPath::bezierPath();
+    x.moveToPoint(NSPoint::new(cx - a, cy - a));
+    x.lineToPoint(NSPoint::new(cx + a, cy + a));
+    x.moveToPoint(NSPoint::new(cx - a, cy + a));
+    x.lineToPoint(NSPoint::new(cx + a, cy - a));
+    x.setLineWidth(1.2);
+    x.setLineCapStyle(objc2_app_kit::NSLineCapStyle::Round);
+    rgb(if hot { k.foreground } else { k.muted }).setStroke();
+    x.stroke();
 }
 
 // ---- confetti ----

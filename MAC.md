@@ -45,6 +45,18 @@ Done without touching the mouse or keyboard: commands, passive
   piped and never read, `quit` and stdin closing still end it in about
   half a second; `--with-parent` ends a one-shot card within 2 s of its
   parent's `kill -9` (without it the card stays up, as documented).
+- **Clear all (0.5.0, 2026-11-22):** with `rust-toast serve` and three
+  sticky cards top-right, synthetic pointer moves (CGEvent) onto the
+  newest card opened the stack and a 115 x 30 pt *Clear all · 3* button
+  appeared 8 pt below the newest card, right-aligned with the cards;
+  moving down across the gap onto it kept the stack open and gave it the
+  hover fill; a click took all three down with one `dismiss` (`how:
+  "user"`) each. The `dismiss_all` command did the same for two more
+  cards; after `configure` `"clear_all": false` the open stack showed no
+  button. With four cards, a double click on the newest card's x (the
+  button slides into its place, under the pointer) took only that card;
+  the button stayed unlit until the pointer moved, then a click cleared
+  the other three.
 - **For the owner to judge:** with the pointer resting where the second
   of two cards landed (top-right, over the second card), the first card's
   500 ms timeout never ran in 4 s (stalled twice); with the pointer off

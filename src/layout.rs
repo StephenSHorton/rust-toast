@@ -232,6 +232,9 @@ pub struct StackSpec<'a> {
     /// Each step back: this much smaller and this much more transparent.
     pub shrink: f64,
     pub fade: f64,
+    /// The "Clear all" button's height (px): while open with 2 or more
+    /// cards it takes a row past the far end. 0 is no button.
+    pub clear: i32,
 }
 
 /// The stack laid out: a slot per card (oldest first) and the folding.
@@ -247,6 +250,10 @@ pub struct Arranged {
     pub at: Option<usize>,
     /// The largest `at`: 0 means nothing to scroll.
     pub max_at: usize,
+    /// The "Clear all" button's row (open, 2 or more cards, and
+    /// [`StackSpec::clear`] set): a card wide, the button's height, a gap
+    /// past the stack's far end. The button sits at its corner-side end.
+    pub clear: Option<Rect>,
 }
 
 /// z of the cards in a deck (minus how far back each sits) and of the
@@ -282,10 +289,13 @@ pub fn arrange(spec: &StackSpec, heights: &[i32], open: bool, at: Option<usize>)
     let (w, gap, peek) = (spec.w as f64, spec.gap as f64, spec.peek as f64);
 
     let (mut lower, mut upper, mut at_out, mut max_at) = (0, 0, None, 0);
+    let clear = open && n > 1 && spec.clear > 0;
     if !open {
         lower = n.saturating_sub(spec.shown.max(1));
     } else if n > 1 {
-        let room = (spec.work.b - spec.work.t - 2 * spec.margin).max(0);
+        // The button's row comes off the room first.
+        let reserve = if clear { spec.clear + spec.gap } else { 0 };
+        let room = (spec.work.b - spec.work.t - 2 * spec.margin - reserve).max(0);
         let total: i32 = heights.iter().sum::<i32>() + spec.gap * (n as i32 - 1);
         if total > room {
             // A deck at each end takes its front card and the peeks; the
@@ -383,12 +393,28 @@ pub fn arrange(spec: &StackSpec, heights: &[i32], open: bool, at: Option<usize>)
     if upper > 0 {
         fold(&mut slots, n - upper, n, 0, run, false);
     }
+    let clear = clear.then(|| {
+        // Past whatever is farthest out: the newest card, or the far deck.
+        let far = bounds(&slots);
+        let t = if top {
+            far.b + spec.gap
+        } else {
+            far.t - spec.gap - spec.clear
+        };
+        Rect {
+            l: x as i32,
+            t,
+            r: x as i32 + spec.w,
+            b: t + spec.clear,
+        }
+    });
     Arranged {
         slots,
         lower,
         upper,
         at: at_out,
         max_at,
+        clear,
     }
 }
 
@@ -404,6 +430,44 @@ pub fn bounds(slots: &[Slot]) -> Rect {
         r: a.r.max(r.r),
         b: a.b.max(r.b),
     })
+}
+
+/// The "Clear all" button past the open stack (card #995): its label, a
+/// muted count and an x, in the cards' look, at the button font
+/// ([`BUTTON_SIZE_DIP`], semibold).
+pub const CLEAR_LABEL: &str = "Clear all";
+pub const CLEAR_H_DIP: f64 = 30.0;
+/// Text inset on each side.
+pub const CLEAR_PAD_DIP: f64 = 12.0;
+/// Between the label, the count and the x.
+pub const CLEAR_SPACE_DIP: f64 = 6.0;
+/// The x's box.
+pub const CLEAR_X_DIP: f64 = 10.0;
+
+/// The count as the button shows it.
+pub fn clear_count_text(n: usize) -> String {
+    format!("\u{b7} {n}")
+}
+
+/// The button's pieces, in px from its top-left, for the label's and the
+/// count's measured text widths: (label, count, x) and the button's size.
+pub fn clear_parts(label_w: i32, count_w: i32, scale: f64) -> ([Rect; 3], i32, i32) {
+    let h = px(CLEAR_H_DIP, scale);
+    let (pad, space, xs) = (
+        px(CLEAR_PAD_DIP, scale),
+        px(CLEAR_SPACE_DIP, scale),
+        px(CLEAR_X_DIP, scale),
+    );
+    let row = |l: i32, w: i32| Rect {
+        l,
+        t: 0,
+        r: l + w,
+        b: h,
+    };
+    let label = row(pad, label_w.max(0));
+    let count = row(label.r + space, count_w.max(0));
+    let x = row(count.r + space + space / 2, xs);
+    ([label, count, x], x.r + pad, h)
 }
 
 /// What a click lands on: a button index (0, 1), the body or the x.

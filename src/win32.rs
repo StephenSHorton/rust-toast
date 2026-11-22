@@ -99,11 +99,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use crate::ENGINE;
 use crate::confetti::{self, Burst};
 use crate::config::{Color, Config, Kind};
-use crate::engine::{FRAME_MS, Look, Mouse, Surface, TICK_MS, Wheel};
+use crate::engine::{Clear, FRAME_MS, Look, Mouse, Surface, TICK_MS, Wheel};
 use crate::layout::{
-    BODY_GAP_DIP, BODY_LINE_DIP, BODY_SIZE_DIP, BUTTON_SIZE_DIP, ICON_LEFT_DIP, ICON_SIZE_DIP,
-    PAD_TOP_DIP, Part, Rect, TEXT_LEFT_DIP, TEXT_RIGHT_DIP, TITLE_DIP, TITLE_RIGHT_DIP,
-    TITLE_SIZE_DIP, px, stripe_rect,
+    BODY_GAP_DIP, BODY_LINE_DIP, BODY_SIZE_DIP, BUTTON_SIZE_DIP, CLEAR_LABEL, ICON_LEFT_DIP,
+    ICON_SIZE_DIP, PAD_TOP_DIP, Part, Rect, TEXT_LEFT_DIP, TEXT_RIGHT_DIP, TITLE_DIP,
+    TITLE_RIGHT_DIP, TITLE_SIZE_DIP, clear_count_text, px, stripe_rect,
 };
 use crate::note::{FULL_ALPHA, Image};
 
@@ -1590,6 +1590,10 @@ fn draw_thumb(dc: HDC, img: &Image, r: RECT, bg: Color, border: Color, radius: i
 /// background) and the edge to DWM's border, which only a rounded window
 /// has.
 fn draw_card(dc: HDC, cw: &Look, pass: Option<Color>) {
+    if let Some(c) = &cw.clear {
+        draw_clear(dc, cw, c, pass.is_some());
+        return;
+    }
     let glass = pass.is_some();
     let sc = cw.scale;
     let pal = cw.palette;
@@ -1752,6 +1756,65 @@ fn draw_card(dc: HDC, cw: &Look, pass: Option<Color>) {
             sc,
         );
     }
+}
+
+/// The "Clear all · N" button past the open stack: the card's body (its
+/// background, or glass, and border), the label in the button font, the
+/// count muted and an x; the whole button takes the hover fill under the
+/// cursor.
+fn draw_clear(dc: HDC, l: &Look, c: &Clear, glass: bool) {
+    let (pal, sc) = (l.palette, l.scale);
+    unsafe { SetBkMode(dc, TRANSPARENT as i32) };
+    let all = RECT {
+        left: 0,
+        top: 0,
+        right: l.w,
+        bottom: l.h,
+    };
+    let hot = l.hot == Part::Body;
+    if hot {
+        fill(dc, all, pal.hover);
+    } else if !glass {
+        fill(dc, all, pal.background);
+    }
+    if l.radius <= 0 {
+        frame(dc, all, pal.border);
+    } else if !glass {
+        boxed(dc, all, Color(0), pal.border, l.radius);
+    }
+    text(
+        dc,
+        CLEAR_LABEL,
+        "Segoe UI",
+        BUTTON_SIZE_DIP,
+        600,
+        pal.foreground,
+        rect_of(c.label),
+        DT_SINGLELINE | DT_VCENTER | DT_NOCLIP,
+        sc,
+    );
+    text(
+        dc,
+        &clear_count_text(c.count),
+        "Segoe UI",
+        BUTTON_SIZE_DIP,
+        600,
+        pal.muted,
+        rect_of(c.count_at),
+        DT_SINGLELINE | DT_VCENTER | DT_NOCLIP,
+        sc,
+    );
+    text(
+        dc,
+        GLYPH_X,
+        ICON_FACE,
+        9.0,
+        400,
+        if hot { pal.foreground } else { pal.muted },
+        rect_of(c.x),
+        DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOCLIP,
+        sc,
+    );
 }
 
 // ---- smoke-test hooks ------------------------------------------------------
