@@ -39,6 +39,7 @@ pub mod layout;
 pub mod note;
 #[cfg(feature = "cli")]
 pub mod protocol;
+pub mod share;
 pub mod sound;
 
 #[cfg(windows)]
@@ -48,7 +49,6 @@ pub mod win32;
 mod darwin;
 
 use std::sync::LazyLock;
-use std::time::Instant;
 
 pub use config::{Accents, Color, Config, DARK, Kind, LIGHT, Motion, Palette, Scheme, hex, rgb};
 pub use engine::{CLEAR_KEY, Clear, Engine, Look, Mouse, Surface, Wheel};
@@ -59,6 +59,20 @@ pub use note::{
 
 /// The process's cards.
 pub(crate) static ENGINE: LazyLock<Engine> = LazyLock::new(Engine::new);
+
+/// The process's way into the shared stack ([`share`]).
+static SHARE: LazyLock<share::Share> = LazyLock::new(|| {
+    share::Share::new(
+        &ENGINE,
+        if platform::DRAWS {
+            share::default_dir()
+        } else {
+            None
+        },
+        platform::wake,
+        platform::play,
+    )
+});
 
 #[cfg(windows)]
 use win32 as platform;
@@ -79,7 +93,7 @@ mod platform {
 /// classes and title are fixed when the first card opens), and again
 /// whenever the look changes: the cards on screen restyle at once.
 pub fn configure(c: Config) {
-    if ENGINE.configure(c) && platform::DRAWS {
+    if SHARE.configure(c) && platform::DRAWS {
         platform::wake_if_started();
     }
 }
@@ -91,7 +105,7 @@ pub fn current_config() -> Config {
 
 /// Applies the person's settings. Turning cards off clears them.
 pub fn set_options(o: Options) {
-    if ENGINE.set_options(o) && platform::DRAWS {
+    if SHARE.set_options(o) && platform::DRAWS {
         platform::wake_if_started();
     }
 }
@@ -104,33 +118,26 @@ pub fn current_options() -> Options {
 /// Shows n (or replaces the card with its id) and plays its sound. A no-op
 /// when cards are off, and on a platform without cards. Never blocks.
 pub fn post(n: Note) {
-    if !platform::DRAWS {
-        return;
-    }
-    let p = ENGINE.post(n, Instant::now());
-    if let Some((s, vol)) = p.sound
-        && let Some(b) = sound::sound_bytes(s, vol)
-    {
-        platform::play(b);
-    }
-    if p.shown {
-        platform::wake();
+    if platform::DRAWS {
+        SHARE.post(n);
     }
 }
 
 /// Removes the card with id, if it is up, without running its callbacks.
 pub fn close(id: &str) {
-    if platform::DRAWS && ENGINE.close(id) {
-        platform::wake();
+    if platform::DRAWS {
+        SHARE.close(id);
     }
 }
 
-/// Dismisses every card, sticky ones too, as if each one's x were
-/// pressed: each slides out and its `on_dismiss` runs (on its own thread).
-/// The "Clear all" button on the open stack calls it ([`Config::clear_all`]).
+/// Dismisses every card this program posted, sticky ones too, as if each
+/// one's x were pressed: each slides out and its `on_dismiss` runs (on its
+/// own thread). Other programs' cards in a shared stack ([`share`]) stay;
+/// the "Clear all" button on the open stack ([`Config::clear_all`]) takes
+/// them all.
 pub fn dismiss_all() {
-    if platform::DRAWS && ENGINE.dismiss_all() {
-        platform::wake();
+    if platform::DRAWS {
+        SHARE.dismiss_all();
     }
 }
 
@@ -154,7 +161,7 @@ pub fn play_sound(kind: Kind) {
 
 /// Whether any card is on screen.
 pub fn visible() -> bool {
-    ENGINE.visible()
+    SHARE.visible()
 }
 
 /// Keeps a test program alive for d with the cards working: on macOS it

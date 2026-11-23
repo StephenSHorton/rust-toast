@@ -225,6 +225,22 @@ window-state lock. If AppKit ever delivers a mouse event synchronously
 inside `setFrame_display` or `orderFrontRegardless` (it shouldn't; events
 are queued), the main thread would deadlock on that lock.
 
+## 2d. One stack for two programs (0.6.0)
+
+- `cargo run --example shared -- Hearth dark 2 12` and, at once in a
+  second terminal, `cargo run --example shared -- Suzuri light 2 10 600`:
+  the four cards go up in **one** bottom-right stack, alternating, each in
+  its own program's look (Hearth dark and square, Suzuri light and round),
+  never on top of each other.
+- Hover the stack: it opens as one; *Clear all · 4* takes all four.
+- Press **Open** on a Suzuri card: the Suzuri terminal prints
+  `Suzuri: Open pressed on card N` (the click went to the drawing program
+  and came back).
+- Start Hearth with 5 seconds and Suzuri with 12: when Hearth quits,
+  Suzuri's two cards stay up, now in Suzuri's own stack.
+- `~/Library/Application Support/rust-toast/share-v1` holds
+  `bottom-right.lock` and `bottom-right.addr`.
+
 ## 3. Port the darwin smoke test
 
 go-toast's `toast_smoke_darwin_test.go` needs an NSApp loop on the main

@@ -25,7 +25,7 @@
 //! setting on, every timeline jumps to its end.
 
 use std::collections::BTreeMap;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use crate::config::{Config, Ease, Kind, Motion, Palette};
@@ -35,7 +35,7 @@ use crate::layout::{
     card_height_dip, clear_count_text, clear_parts, close_rect, ease, hit_part, is_left, is_top,
     px, thumb_rect, thumb_size_dip,
 };
-use crate::note::{Callback, FULL_ALPHA, Image, Note, Options, Stack, clean};
+use crate::note::{Callback, Card, FULL_ALPHA, Image, Note, Options, Stack, clean};
 use crate::sound::{Sound, sound_for};
 
 /// What a window shows: everything a platform needs to draw a card.
@@ -98,6 +98,11 @@ pub struct Clear {
     /// The x.
     pub x: Rect,
 }
+
+/// The first character of the id of a card another app sent to this
+/// process's shared stack ([`crate::share`]). An app's own ids never start
+/// with it (a control character).
+pub const SHARED_MARK: char = '\u{1}';
 
 /// The key of the "Clear all" button's window. Card keys count up from 1
 /// and never reach it.
@@ -576,15 +581,83 @@ impl Engine {
         lock(&self.shared).stack.close_id(id)
     }
 
+    /// Puts another app's card in the stack, drawn in its look (style),
+    /// for the shared stack ([`crate::share`]): no sound (the app plays its
+    /// own), and a confetti burst when burst. Its id should start with
+    /// [`SHARED_MARK`]. A no-op when cards are off; true when it is in.
+    pub fn post_shared(&self, n: Note, style: Arc<Config>, burst: bool, now: Instant) -> bool {
+        let mut s = lock(&self.shared);
+        if !s.opts.enabled {
+            return false;
+        }
+        let Some(n) = clean(n) else { return false };
+        if s.stack.cards.is_empty() {
+            s.reloc = Reloc::Active;
+        } else if s.reloc < Reloc::Rehome {
+            s.reloc = Reloc::Rehome;
+        }
+        let burst = burst && n.kind == Kind::Success;
+        let (key, _) = s.stack.post_styled(n, Some(style), now);
+        if burst && !s.confetti.contains(&key) {
+            s.confetti.push(key);
+        }
+        s.raise = true;
+        true
+    }
+
+    /// Removes every card whose id starts with prefix, without running
+    /// callbacks; true when any was up (sync).
+    pub fn close_prefix(&self, prefix: &str) -> bool {
+        let mut s = lock(&self.shared);
+        let n = s.stack.cards.len();
+        s.stack.cards.retain(|c| !c.note.id.starts_with(prefix));
+        s.stack.cards.len() != n
+    }
+
+    /// Redraws every card whose id starts with prefix in style; true when
+    /// any was up (sync).
+    pub fn restyle_prefix(&self, prefix: &str, style: Arc<Config>) -> bool {
+        let mut s = lock(&self.shared);
+        let mut any = false;
+        for c in s.stack.cards.iter_mut() {
+            if c.note.id.starts_with(prefix) {
+                c.style = Some(style.clone());
+                c.rev += 1;
+                any = true;
+            }
+        }
+        any
+    }
+
+    /// Dismisses this app's own cards (not those other apps sent to its
+    /// shared stack), as [`Engine::dismiss_all`] does. True when any was
+    /// up (sync).
+    pub fn dismiss_own(&self) -> bool {
+        self.dismiss_where(|c| !c.note.id.starts_with(SHARED_MARK))
+    }
+
+    /// Dismisses every card whose id starts with prefix, as
+    /// [`Engine::dismiss_all`] does. True when any was up (sync).
+    pub fn dismiss_prefix(&self, prefix: &str) -> bool {
+        self.dismiss_where(|c| c.note.id.starts_with(prefix))
+    }
+
     /// Takes every card out of the model, sticky ones and ones already
     /// fading too, as if each one's x were pressed: each `on_dismiss` gets
     /// its own thread once the lock is free, and the next sync slides them
     /// all out. True when any was up (sync).
     pub fn dismiss_all(&self) -> bool {
+        self.dismiss_where(|_| true)
+    }
+
+    fn dismiss_where(&self, f: impl Fn(&Card) -> bool) -> bool {
         let (cards, prefix) = {
             let mut s = lock(&self.shared);
-            (std::mem::take(&mut s.stack.cards), s.cfg.log_prefix())
+            let (out, keep) = std::mem::take(&mut s.stack.cards).into_iter().partition(f);
+            s.stack.cards = keep;
+            (out, s.cfg.log_prefix())
         };
+        let cards: Vec<Card> = cards;
         if cards.is_empty() {
             return false;
         }
@@ -679,6 +752,7 @@ impl Engine {
             labels: Vec<String>,
             clickable: bool,
             closing: bool,
+            style: Option<Arc<Config>>,
         }
         let mut timed = false;
         let (views, reloc, up, corner, cfg, cfg_rev, bursts) = {
@@ -701,6 +775,7 @@ impl Engine {
                         labels: c.note.actions.iter().map(|a| a.label.clone()).collect(),
                         clickable: c.note.on_click.is_some(),
                         closing: c.closing.is_some(),
+                        style: c.style.clone(),
                     }
                 })
                 .collect();
@@ -729,7 +804,13 @@ impl Engine {
         ui.reduce = surf.reduce_motion();
         ui.corner = corner;
         ui.motion = cfg.motion.clone();
-        let os_dark = cfg.scheme == crate::config::Scheme::System && surf.os_dark();
+        let os_dark = (cfg.scheme == crate::config::Scheme::System
+            || views.iter().any(|v| {
+                v.style
+                    .as_ref()
+                    .is_some_and(|s| s.scheme == crate::config::Scheme::System)
+            }))
+            && surf.os_dark();
         let dark = cfg.is_dark(os_dark);
         ui.cfg = cfg.clone();
         ui.cfg_rev = cfg_rev;
@@ -748,12 +829,27 @@ impl Engine {
                 .wins
                 .remove(&v.key)
                 .unwrap_or_else(|| new_win(v.key, &cfg, cfg_rev, dark, now));
-            let restyle = cw.cfg_rev != cfg_rev || cw.dark != dark;
-            if restyle {
-                cw.cfg = cfg.clone();
-                cw.cfg_rev = cfg_rev;
-                cw.dark = dark;
-            }
+            // Another app's card (the shared stack) keeps that app's look.
+            let restyle = match &v.style {
+                Some(st) => {
+                    let d = st.is_dark(os_dark);
+                    let r = cw.cfg != **st || cw.dark != d;
+                    if r {
+                        cw.cfg = (**st).clone();
+                        cw.dark = d;
+                    }
+                    r
+                }
+                None => {
+                    let r = cw.cfg_rev != cfg_rev || cw.dark != dark;
+                    if r {
+                        cw.cfg = cfg.clone();
+                        cw.cfg_rev = cfg_rev;
+                        cw.dark = dark;
+                    }
+                    r
+                }
+            };
             if fresh || restyle || cw.rev != v.rev || cw.scale != sc {
                 cw.rev = v.rev;
                 cw.scale = sc;

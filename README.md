@@ -26,7 +26,7 @@ v0.2.0. It grew up inside Irori and is shared by suzuri and other apps.
 
 ```toml
 [dependencies]
-rust-toast = { git = "https://github.com/StephenSHorton/rust-toast", tag = "v0.5.0" }
+rust-toast = { git = "https://github.com/StephenSHorton/rust-toast", tag = "v0.6.0" }
 ```
 
 ```rust
@@ -63,6 +63,9 @@ toast::post(Note {
   older ones fold into a deck in the corner, hovering opens it, a sideways
   drag throws a card away, and everything animates (see [Motion](#motion)).
 
+- Programs that use rust-toast share one stack per corner: see
+  [One stack for every program](#one-stack-for-every-program).
+
 Try it: `cargo run --example demo` (`cargo run --example demo 20 6` keeps
 it up 20 s with six cards, enough to fold a deck).
 
@@ -85,6 +88,43 @@ rust-toast --title "Backup finished" --kind success   # one card from a script
 [examples/node-client.mjs](examples/node-client.mjs) is a client in Node
 with no dependencies. Tagged releases attach the program for Windows x64
 and macOS (universal) with SHA-256 checksums.
+
+## One stack for every program
+
+Every program on the computer that uses rust-toast (0.6.0 or later) and
+shows its cards in the same corner shows them in **one stack**, instead of
+each drawing its own stack on top of the others. Nothing to call: it is how
+`post` works. The same goes for apps using the `rust-toast` program.
+
+![Two programs' cards in one stack](docs/shared-stack.png)
+
+- The first program to post in a corner draws that corner's stack; the
+  others send it their cards over a loopback link and get back what the
+  person did (a button, a click, a dismiss), so each program's callbacks
+  still run in that program.
+- Each card keeps its own program's look (palette, scheme, radius, glass,
+  stripe, capture exclusion); each program plays its own sounds at its own
+  volume. The stack itself (hover, the deck, `max_cards`, *Clear all*,
+  motion) is the drawing program's.
+- `toast::close`, `toast::dismiss_all()` and `Note::id` reach only the
+  calling program's cards. *Clear all* on the stack clears them all.
+- When the drawing program quits, another takes the corner over and every
+  program's live cards come back in its stack (with the time each had
+  left). A program whose person turns cards off or moves them to another
+  corner leaves this corner's stack the same way.
+- Programs in different corners keep separate stacks.
+- How: like rsz-caffeine's shared switch, a folder the programs agree on,
+  `%LOCALAPPDATA%\rust-toast\share-v1` on Windows and
+  `~/Library/Application Support/rust-toast/share-v1` on macOS. The drawing
+  program holds an OS lock on `<corner>.lock` (released when it quits,
+  however it quits) and writes its loopback port and a random token to
+  `<corner>.addr`; it takes no link without the token. The `v1` is the wire
+  version: programs on different wire versions never share. If the folder
+  or the link fails, a program draws its own cards as before.
+  `RUST_TOAST_SHARE_DIR` moves the folder (the tests use it).
+
+Try it: `cargo run --example shared -- Hearth dark 2 12` and, at once in
+another terminal, `cargo run --example shared -- Suzuri light 2 10 600`.
 
 ## Motion
 
@@ -129,7 +169,7 @@ values as `Motion::default()`:
 | Field | Default | What |
 | --- | --- | --- |
 | `shown` | 3 | cards in full at rest |
-| `max_cards` | 5 | cards up at once; a post past it pushes the oldest non-sticky one off |
+| `max_cards` | 5 | cards up at once; a post past it pushes the oldest non-sticky one off (in a shared stack, any program's) |
 | `peek`, `peek_depth` | 12 dip, 2 | how far and how many cards peek out behind a deck's front |
 | `peek_shrink`, `peek_fade` | 0.05, 0.22 | each step back: smaller, more transparent |
 | `lock` | 12 dip | drag that decides its axis |

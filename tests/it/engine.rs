@@ -58,6 +58,11 @@ impl Rec {
         }
     }
 
+    /// Whether card key's window is kept out of screen capture.
+    pub(crate) fn capture_excluded(&self, key: u64) -> bool {
+        self.wins[&key].capture_excluded
+    }
+
     /// Card key's top-left on screen.
     fn at(&self, key: u64) -> (i32, i32) {
         let p = self.wins[&key].pos;
@@ -643,7 +648,7 @@ fn stack_with(
     (e, keys)
 }
 
-fn rect_of(s: &Rec, k: u64) -> Rect {
+pub(crate) fn rect_of(s: &Rec, k: u64) -> Rect {
     let (x, y, w, h) = s.wins[&k].pos;
     Rect {
         l: x,

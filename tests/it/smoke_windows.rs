@@ -33,6 +33,15 @@ fn toast_smoke() {
         return;
     }
     set_dpi_aware();
+    // A share folder of its own: the test counts its own windows, so it
+    // must not join a real shared stack on this computer.
+    // SAFETY: set before the first card, and no other test reads it.
+    unsafe {
+        std::env::set_var(
+            toast::share::DIR_ENV,
+            std::env::temp_dir().join(format!("rust-toast-smoke-{}", std::process::id())),
+        )
+    };
     toast::configure(Config {
         app_name: "Irori smoke".into(),
         glass: if std::env::var("RUST_TOAST_SMOKE_GLASS").as_deref() == Ok("1") {

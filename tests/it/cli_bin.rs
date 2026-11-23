@@ -11,6 +11,19 @@ use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_rust-toast");
 
+/// The program, with a share folder of its own: tests running side by
+/// side never join one another's stack, nor a real one on this computer.
+fn bin() -> Command {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let mut c = Command::new(BIN);
+    c.env(
+        "RUST_TOAST_SHARE_DIR",
+        std::env::temp_dir().join(format!("rust-toast-cli-test-{}-{n}", std::process::id())),
+    );
+    c
+}
+
 struct Program {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -19,7 +32,7 @@ struct Program {
 
 impl Program {
     fn serve() -> Program {
-        let mut child = Command::new(BIN)
+        let mut child = bin()
             .arg("serve")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -83,21 +96,18 @@ impl Drop for Program {
 
 #[test]
 fn version_and_help() {
-    let o = Command::new(BIN).arg("--version").output().unwrap();
+    let o = bin().arg("--version").output().unwrap();
     assert!(o.status.success());
     assert_eq!(
         String::from_utf8_lossy(&o.stdout).trim(),
         format!("rust-toast {}", env!("CARGO_PKG_VERSION"))
     );
-    let o = Command::new(BIN).arg("--help").output().unwrap();
+    let o = bin().arg("--help").output().unwrap();
     assert!(o.status.success());
     assert!(String::from_utf8_lossy(&o.stdout).contains("serve"));
-    let o = Command::new(BIN).output().unwrap();
+    let o = bin().output().unwrap();
     assert_eq!(o.status.code(), Some(2), "no arguments: usage");
-    let o = Command::new(BIN)
-        .args(["--title", "x", "--bogus"])
-        .output()
-        .unwrap();
+    let o = bin().args(["--title", "x", "--bogus"]).output().unwrap();
     assert_eq!(o.status.code(), Some(2));
 }
 
@@ -188,7 +198,7 @@ fn cli_smoke() {
 /// `serve` with its stdout piped and never read, as a fire-and-forget app
 /// would leave it.
 fn serve_unread() -> (Child, ChildStdin, std::process::ChildStdout) {
-    let mut child = Command::new(BIN)
+    let mut child = bin()
         .arg("serve")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -248,7 +258,7 @@ fn serve_ends_with_stdin_although_stdout_is_never_read() {
 
 #[test]
 fn a_bad_corner_is_a_bad_argument() {
-    let o = Command::new(BIN)
+    let o = bin()
         .args(["--title", "x", "--corner", "middle", "--silent"])
         .output()
         .unwrap();
@@ -261,10 +271,7 @@ fn a_bad_corner_is_a_bad_argument() {
 #[cfg(not(any(windows, target_os = "macos")))]
 #[test]
 fn one_card_exits_1_where_there_are_no_cards() {
-    let o = Command::new(BIN)
-        .args(["--title", "x", "--silent"])
-        .output()
-        .unwrap();
+    let o = bin().args(["--title", "x", "--silent"]).output().unwrap();
     assert_eq!(o.status.code(), Some(1));
     let out = String::from_utf8_lossy(&o.stdout);
     let lines: Vec<&str> = out.lines().collect();
@@ -283,7 +290,7 @@ fn one_card_with_parent_ends_when_stdin_closes() {
         eprintln!("skipped: set RUST_TOAST_SMOKE=1");
         return;
     }
-    let mut child = Command::new(BIN)
+    let mut child = bin()
         .args([
             "--title",
             "With parent",

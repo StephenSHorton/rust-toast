@@ -6,6 +6,7 @@
 mod confetti;
 mod engine;
 mod model;
+mod share;
 mod smoke_windows;
 
 // The `rust-toast` program and its protocol (`--features cli`).

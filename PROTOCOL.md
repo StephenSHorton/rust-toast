@@ -53,6 +53,11 @@ in about 70 lines of Node with no dependencies.
 - On macOS it runs the AppKit loop on its main thread as an Accessory app:
   no Dock icon, no menu bar, never the active app; the cards never take
   focus. On Windows the cards run on the library's own UI thread.
+- Its cards join the shared stack of their corner: every program using
+  rust-toast 0.6.0 or later that shows cards in the same corner shows them
+  in one stack (README, *One stack for every program*). Events are the
+  same; the one difference is that a card pushed off a full shared stack
+  reports `timeout`, not `pushed`.
 - On any other system `ready` says `"supported": false` and every command
   is accepted and does nothing (posts still answer `posted`).
 
@@ -199,3 +204,5 @@ Added without a bump:
 
 - 0.5.0: the `dismiss_all` command, `configure`'s `clear_all`, and the
   *Clear all* button.
+- 0.6.0: cards join the shared stack of their corner with other programs'
+  cards (see *Life cycle*).

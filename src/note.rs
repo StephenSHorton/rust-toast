@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::config::Kind;
+use crate::config::{Config, Kind};
 
 /// A callback: run once, on its own thread, after its card closes.
 pub type Callback = Arc<dyn Fn() + Send + Sync>;
@@ -230,6 +230,9 @@ pub struct Card {
     pub until: Option<Instant>,
     /// Fading out since.
     pub closing: Option<Instant>,
+    /// Another app's look, for a card it sent to this process's shared
+    /// stack (`crate::share`); `None` draws it in this app's own.
+    pub style: Option<Arc<Config>>,
 }
 
 impl Card {
@@ -267,6 +270,16 @@ impl Stack {
     /// slot). On a full stack the oldest non-sticky card (else the oldest)
     /// is pushed off and returned. Returns the posted card's key.
     pub fn post(&mut self, n: Note, now: Instant) -> (u64, Option<Card>) {
+        self.post_styled(n, None, now)
+    }
+
+    /// [`Stack::post`] for a card drawn in style (another app's look).
+    pub fn post_styled(
+        &mut self,
+        n: Note,
+        style: Option<Arc<Config>>,
+        now: Instant,
+    ) -> (u64, Option<Card>) {
         let life = default_lifetime(&n);
         let until = (life > Duration::ZERO).then(|| now + life);
         if !n.id.is_empty()
@@ -275,6 +288,7 @@ impl Stack {
             c.note = n;
             c.until = until;
             c.closing = None;
+            c.style = style;
             c.rev += 1;
             return (c.key, None);
         }
@@ -292,6 +306,7 @@ impl Stack {
             born: now,
             until,
             closing: None,
+            style,
         });
         (self.next, dropped)
     }
