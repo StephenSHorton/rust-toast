@@ -725,3 +725,53 @@ fn configure_turns_clear_all_off_and_on() {
     s.line(br#"{"cmd":"configure","clear_all":"yes"}"#);
     assert!(matches!(&drain(&rx)[..], [Event::Error { .. }]));
 }
+
+#[test]
+fn a_post_carries_its_own_accent_and_a_bad_one_is_refused() {
+    let h = Headless::new();
+    let (mut s, rx) = session(&h);
+    s.line(br##"{"cmd":"post","id":"org","title":"Acme","accent":{"light":"#7c3aed","dark":"a78bfa"}}"##);
+    s.line(br#"{"cmd":"post","id":"plain","title":"Plain"}"#);
+    s.line(br##"{"cmd":"post","id":"half","title":"Half","accent":{"dark":"#a78bfa"}}"##);
+    assert_eq!(
+        drain(&rx),
+        vec![posted("org"), posted("plain"), posted("half")]
+    );
+    assert_eq!(
+        h.note("org").accent,
+        Some(toast::CardAccent {
+            light: rgb(0x7c, 0x3a, 0xed),
+            dark: rgb(0xa7, 0x8b, 0xfa),
+        })
+    );
+    assert_eq!(h.note("plain").accent, None, "no accent: as before");
+    assert_eq!(
+        h.note("half").accent.unwrap().pick(false),
+        Some(rgb(0xa7, 0x8b, 0xfa)),
+        "one left out is the other"
+    );
+
+    // A bad value refuses the whole post, like any bad colour: the card up
+    // with that id stays as it was, and nothing new goes up.
+    for bad in [
+        r##"{"cmd":"post","id":"org","title":"Changed","accent":{"light":"#12345","dark":"#a78bfa"}}"##,
+        r##"{"cmd":"post","id":"org","title":"Changed","accent":{"light":"#7c3aed","dark":"purple"}}"##,
+        r##"{"cmd":"post","id":"org","title":"Changed","accent":{}}"##,
+        r##"{"cmd":"post","id":"new","title":"New","accent":{"light":"#gggggg"}}"##,
+    ] {
+        s.line(bad.as_bytes());
+        match &drain(&rx)[..] {
+            [Event::Error { message, id, .. }] => {
+                assert!(message.starts_with("accent"), "{message}");
+                assert!(id.is_some(), "about the card");
+            }
+            other => panic!("{bad}: {other:?}"),
+        }
+    }
+    assert_eq!(h.note("org").title, "Acme");
+    assert_eq!(s.ids(), vec!["org", "plain", "half"]);
+
+    // A wrong type is an error too (as for any field).
+    s.line(br##"{"cmd":"post","id":"t","title":"T","accent":"#7c3aed"}"##);
+    assert!(matches!(&drain(&rx)[..], [Event::Error { .. }]));
+}

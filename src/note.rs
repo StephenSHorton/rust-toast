@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::config::{Config, Kind};
+use crate::config::{CardAccent, Config, Kind};
 
 /// A callback: run once, on its own thread, after its card closes.
 pub type Callback = Arc<dyn Fn() + Send + Sync>;
@@ -91,6 +91,10 @@ pub struct Note {
     /// A thumbnail under the body (a proof's screenshot).
     pub image: Option<Image>,
     pub kind: Kind,
+    /// This card's own accent, in place of the palette's accent for its
+    /// kind: the stripe, the icon and the first button. `None` (the
+    /// default) keeps the palette's.
+    pub accent: Option<CardAccent>,
     /// Skips the sound.
     pub silent: bool,
     /// Overrides the default lifetime ([`default_lifetime`]). Ignored when
@@ -116,6 +120,7 @@ impl fmt::Debug for Note {
             .field("body", &self.body)
             .field("image", &self.image)
             .field("kind", &self.kind)
+            .field("accent", &self.accent)
             .field("silent", &self.silent)
             .field("expire", &self.expire)
             .field("sticky", &self.sticky)

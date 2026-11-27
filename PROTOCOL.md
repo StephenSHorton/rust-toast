@@ -54,7 +54,7 @@ in about 70 lines of Node with no dependencies.
   no Dock icon, no menu bar, never the active app; the cards never take
   focus. On Windows the cards run on the library's own UI thread.
 - Its cards join the shared stack of their corner: every program using
-  rust-toast 0.6.0 or later that shows cards in the same corner shows them
+  rust-toast 0.7.0 or later that shows cards in the same corner shows them
   in one stack (README, *One stack for every program*). Events are the
   same; the one difference is that a card pushed off a full shared stack
   reports `timeout`, not `pushed`.
@@ -85,6 +85,7 @@ can talk to an older program. Fields left out take their defaults (for
 | `title` | | One line. A post needs a title or a body; with only a body, the body becomes the title. |
 | `body` | | Up to two lines; longer text is ellipsized. |
 | `kind` | `info` | `info`, `success`, `warn` (or `warning`), `error`: colour, icon and sound. |
+| `accent` | | This card's own colour, `{"light": "#rrggbb", "dark": "#rrggbb"}`: its stripe, icon and first button take it in place of `configure`'s accent for its kind (`light` on light cards, `dark` on dark ones; one left out is the other). Left out, the card looks as `configure` says. The kind still picks the icon's shape and the sound. |
 | `sticky` | false | Stays until the person or a `close` takes it down. |
 | `timeout_ms` | 3 s, 6 s for warn and error, 10 s with buttons | How long it stays. Ignored when sticky. Hovering the stack pauses it. |
 | `thumbnail` | | Path of a PNG or JPEG shown under the body. |
@@ -137,7 +138,10 @@ and a card still up when the program exits, which reports nothing.
   the start of the line (at most 200 characters, control characters
   removed).
 - A bad value (`corner`, a colour, a `volume` that isn't a number) makes
-  the whole command an error; nothing of it is applied.
+  the whole command an error; nothing of it is applied. A colour is
+  `#rrggbb` or `rrggbb`. A `post` with a bad `accent` (a bad colour, or
+  neither `light` nor `dark`) is an `error` with its `id`, and no card goes
+  up or changes.
 - Numbers outside their range are clamped, not errors: `volume` to 0 to 1,
   `corner_radius` to 0 to 24; `glass` outside 0 to 1 is solid; `shown`
   and `max_cards` are at least 1.
@@ -206,3 +210,6 @@ Added without a bump:
   *Clear all* button.
 - 0.6.0: cards join the shared stack of their corner with other programs'
   cards (see *Life cycle*).
+- 0.7.0: `post`'s `accent`. An older program ignores it and draws the card
+  in `configure`'s colours. Programs on 0.7.0 and later share a stack
+  with each other, not with 0.6.x ones.

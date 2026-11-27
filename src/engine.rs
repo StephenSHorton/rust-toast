@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use crate::config::{Config, Ease, Kind, Motion, Palette};
+use crate::config::{CardAccent, Config, Ease, Kind, Motion, Palette};
 use crate::layout::{
     CARD_GAP_DIP, CARD_MARGIN_DIP, CARD_WIDTH_DIP, CLEAR_H_DIP, CLEAR_LABEL, MAX_BODY_LINES, Part,
     Pose, Rect, SHOWN_Z, StackSpec, TEXT_LEFT_DIP, TEXT_RIGHT_DIP, arrange, bounds, button_rects,
@@ -309,6 +309,7 @@ struct CardWin {
     title: String,
     body: String,
     kind: Kind,
+    accent: Option<CardAccent>,
     labels: Vec<String>,
     clickable: bool,
     image: Option<Image>,
@@ -749,6 +750,7 @@ impl Engine {
             body: String,
             image: Option<Image>,
             kind: Kind,
+            accent: Option<CardAccent>,
             labels: Vec<String>,
             clickable: bool,
             closing: bool,
@@ -772,6 +774,7 @@ impl Engine {
                         body: c.note.body.clone(),
                         image: c.note.image.clone(),
                         kind: c.note.kind,
+                        accent: c.note.accent,
                         labels: c.note.actions.iter().map(|a| a.label.clone()).collect(),
                         clickable: c.note.on_click.is_some(),
                         closing: c.closing.is_some(),
@@ -856,6 +859,7 @@ impl Engine {
                 cw.title = v.title;
                 cw.body = v.body;
                 cw.kind = v.kind;
+                cw.accent = v.accent;
                 cw.labels = v.labels;
                 cw.clickable = v.clickable;
                 cw.image = v.image;
@@ -1642,6 +1646,7 @@ fn new_win(key: u64, cfg: &Config, cfg_rev: u64, dark: bool, now: Instant) -> Ca
         title: String::new(),
         body: String::new(),
         kind: Kind::Info,
+        accent: None,
         labels: vec![],
         clickable: false,
         image: None,
@@ -1702,6 +1707,16 @@ fn exit(cw: &mut CardWin, throw: Option<f64>, corner: &str, sc: f64, m: &Motion,
     cw.pressed = Part::None;
 }
 
+/// The card's palette: its look's, with the card's own accent when it has
+/// one.
+fn card_palette(cw: &CardWin) -> Palette {
+    let p = cw.cfg.palette(cw.dark);
+    match cw.accent.and_then(|a| a.pick(cw.dark)) {
+        Some(c) => p.with_card_accent(cw.kind, c),
+        None => p,
+    }
+}
+
 fn look(cw: &CardWin) -> Look {
     let (w, h, folded) = cw.drawn.unwrap_or((cw.w, cw.h, false));
     let s = if cw.w > 0 {
@@ -1735,7 +1750,7 @@ fn look(cw: &CardWin) -> Look {
         radius: cw.radius,
         close: sr(cw.close),
         buttons: cw.buttons.iter().map(|b| sr(*b)).collect(),
-        palette: cw.cfg.palette(cw.dark),
+        palette: card_palette(cw),
         dark: cw.dark,
         glass: cw.cfg.glass_alpha(),
         stripe: cw.cfg.stripe,

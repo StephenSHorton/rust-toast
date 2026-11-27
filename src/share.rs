@@ -40,13 +40,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use crate::config::{Accents, Color, Config, Kind, Palette, Scheme};
+use crate::config::{Accents, CardAccent, Color, Config, Kind, Palette, Scheme};
 use crate::engine::{Engine, SHARED_MARK, run_callback};
 use crate::note::{Action, Callback, Image, Note, Options, clean, default_lifetime};
 use crate::sound::{sound_bytes, sound_for};
 
 /// The wire version: in the share folder's name and the hello.
-pub const WIRE: u32 = 1;
+pub const WIRE: u32 = 2;
 /// An environment variable naming the folder the share folder goes in,
 /// instead of the person's app data (tests).
 pub const DIR_ENV: &str = "RUST_TOAST_SHARE_DIR";
@@ -95,6 +95,8 @@ pub struct PostMsg {
     pub title: String,
     pub body: String,
     pub kind: Kind,
+    /// The card's own accent (light, dark).
+    pub accent: Option<CardAccent>,
     pub sticky: bool,
     /// Time left before it fades (0: the library's default for it).
     pub expire_ms: u64,
@@ -327,6 +329,14 @@ impl Msg {
                 w.str(&p.title);
                 w.str(&p.body);
                 w.u8(kind_byte(p.kind));
+                match p.accent {
+                    Some(a) => {
+                        w.u8(1);
+                        w.color(a.light);
+                        w.color(a.dark);
+                    }
+                    None => w.u8(0),
+                }
                 w.u8(p.sticky as u8);
                 w.u64(p.expire_ms);
                 w.u8(p.burst as u8);
@@ -397,6 +407,13 @@ impl Msg {
                 let title = r.str()?;
                 let body = r.str()?;
                 let kind = byte_kind(r.u8()?)?;
+                let accent = match r.u8()? {
+                    0 => None,
+                    _ => Some(CardAccent {
+                        light: r.color()?,
+                        dark: r.color()?,
+                    }),
+                };
                 let sticky = r.bool()?;
                 let expire_ms = r.u64()?;
                 let burst = r.bool()?;
@@ -416,6 +433,7 @@ impl Msg {
                     title,
                     body,
                     kind,
+                    accent,
                     sticky,
                     expire_ms,
                     burst,
@@ -1138,6 +1156,7 @@ fn post_msg(m: &Mine, now: Instant) -> Option<Msg> {
         title: n.title.clone(),
         body: n.body.clone(),
         kind: n.kind,
+        accent: n.accent,
         sticky: n.sticky,
         expire_ms,
         burst: m.burst,
@@ -1173,6 +1192,7 @@ fn remote_note(p: PostMsg, prefix: &str, out: &Arc<Mutex<TcpStream>>, pid: u32) 
         body: p.body,
         image: p.image.and_then(|(w, h, rgba)| Image::new(w, h, rgba)),
         kind: p.kind,
+        accent: p.accent,
         silent: true,
         expire: Duration::from_millis(p.expire_ms),
         sticky: p.sticky,

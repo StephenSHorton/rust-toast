@@ -245,6 +245,52 @@ impl Palette {
     }
 }
 
+/// One card's own accent ([`crate::Note::accent`]): its stripe, icon and
+/// first button in this colour instead of the palette's accent for its
+/// kind. `light` shows on light cards, `dark` on dark ones; an unset one
+/// falls back to the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub struct CardAccent {
+    pub light: Color,
+    pub dark: Color,
+}
+
+impl CardAccent {
+    /// The colour for a light (false) or dark (true) card; `None` when
+    /// both are unset.
+    pub fn pick(self, dark: bool) -> Option<Color> {
+        let (a, b) = if dark {
+            (self.dark, self.light)
+        } else {
+            (self.light, self.dark)
+        };
+        [a, b].into_iter().find(|c| !c.is_zero())
+    }
+}
+
+impl Palette {
+    /// The resolved palette with c as kind's accent and as the first
+    /// button (its hover and text derived from c as [`Palette::resolved`]
+    /// derives them).
+    pub fn with_card_accent(self, kind: Kind, c: Color) -> Palette {
+        let mut p = self;
+        match kind {
+            Kind::Info => p.accent.info = c,
+            Kind::Success => p.accent.success = c,
+            Kind::Warn => p.accent.warn = c,
+            Kind::Error => p.accent.error = c,
+        }
+        p.primary = c;
+        p.primary_hover = mix(c, p.foreground, 0.15);
+        p.on_primary = if contrast(p.foreground, c) > contrast(p.background, c) {
+            p.foreground
+        } else {
+            p.background
+        };
+        p
+    }
+}
+
 /// Which of the two palettes the cards use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum Scheme {

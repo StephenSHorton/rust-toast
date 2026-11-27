@@ -83,6 +83,10 @@ fn messages_survive_the_wire() {
         title: "Build finished".into(),
         body: "All tests passed.".into(),
         kind: Kind::Success,
+        accent: Some(toast::CardAccent {
+            light: toast::hex("#7c3aed"),
+            dark: toast::hex("#a78bfa"),
+        }),
         sticky: false,
         expire_ms: 2500,
         burst: true,

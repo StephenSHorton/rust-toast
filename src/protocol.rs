@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Accents, Color, Config, Kind, Palette, Scheme};
+use crate::config::{Accents, CardAccent, Color, Config, Kind, Palette, Scheme};
 use crate::layout::{TEXT_WIDTH_DIP, THUMB_MAX_H_DIP};
 use crate::note::{
     Action, CORNER_BOTTOM_LEFT, CORNER_BOTTOM_RIGHT, CORNER_TOP_LEFT, CORNER_TOP_RIGHT, Image,
@@ -145,6 +145,8 @@ pub struct PostCmd {
     pub title: String,
     pub body: String,
     pub kind: Option<KindName>,
+    /// The card's own accent, in place of the configured one for its kind.
+    pub accent: Option<PostAccentCmd>,
     pub sticky: bool,
     /// Milliseconds before it fades; 0 or left out is the library's
     /// default. Ignored when sticky.
@@ -160,6 +162,37 @@ pub struct PostCmd {
     pub clickable: Option<bool>,
     /// Up to two buttons; the first is primary. Extra ones are dropped.
     pub actions: Vec<ActionCmd>,
+}
+
+/// `post`'s `accent`: `#rrggbb` for light cards and for dark ones; one
+/// left out is the other.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct PostAccentCmd {
+    pub light: Option<String>,
+    pub dark: Option<String>,
+}
+
+impl PostAccentCmd {
+    /// The accent, or an error naming the bad field.
+    pub fn parse(&self) -> Result<CardAccent, String> {
+        let get = |v: &Option<String>, field: &str| -> Result<Color, String> {
+            match v {
+                None => Ok(Color(0)),
+                Some(v) => {
+                    parse_hex(v).ok_or_else(|| format!("accent.{field}: not a #rrggbb colour"))
+                }
+            }
+        };
+        let a = CardAccent {
+            light: get(&self.light, "light")?,
+            dark: get(&self.dark, "dark")?,
+        };
+        if a.pick(false).is_none() {
+            return Err("accent: needs light or dark".into());
+        }
+        Ok(a)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -917,6 +950,10 @@ impl<B: Backend> Session<B> {
         if title.is_empty() && body.is_empty() {
             return Err(err("post: a title or a body is needed"));
         }
+        let accent = match &p.accent {
+            Some(a) => Some(a.parse().map_err(|m| err(&m))?),
+            None => None,
+        };
         if !on {
             (self.emit)(Event::Posted { id });
             return Ok(());
@@ -1004,6 +1041,7 @@ impl<B: Backend> Session<B> {
             body,
             image,
             kind: p.kind.map(Kind::from).unwrap_or_default(),
+            accent,
             silent: p.sound == Some(false),
             expire: Duration::from_millis(p.timeout_ms.unwrap_or(0).min(MAX_TIMEOUT_MS)),
             sticky: p.sticky,

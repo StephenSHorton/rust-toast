@@ -2044,3 +2044,70 @@ fn clear_all_sliding_under_a_still_pointer_takes_no_click_until_it_moves() {
     assert!(e.mouse(&mut s, CLEAR_KEY, Mouse::Up, x - 6, y + 2, t + ms(280)));
     assert!(e.notes().is_empty());
 }
+
+#[test]
+fn a_card_with_its_own_accent_draws_its_stripe_icon_and_first_button_in_it() {
+    let e = engine();
+    e.configure(Config {
+        scheme: Scheme::Dark,
+        ..Config::default()
+    });
+    let mut s = Rec::new(1.0);
+    let t0 = Instant::now();
+    let accent = toast::CardAccent {
+        light: hex("#7c3aed"),
+        dark: hex("#a78bfa"),
+    };
+    e.post(note("Plain"), t0);
+    e.post(
+        Note {
+            accent: Some(accent),
+            ..note("Org")
+        },
+        t0,
+    );
+    e.post(
+        Note {
+            kind: toast::Kind::Warn,
+            accent: Some(accent),
+            ..note("Org warn")
+        },
+        t0,
+    );
+    e.sync(&mut s, t0);
+    fn by_title(s: &Rec, t: &str) -> Look {
+        s.wins
+            .values()
+            .map(|w| w.look.clone().unwrap())
+            .find(|l| l.title == t)
+            .unwrap()
+    }
+    assert_eq!(
+        by_title(&s, "Plain").palette,
+        DARK.resolved(),
+        "no accent: as before"
+    );
+    let p = by_title(&s, "Org").palette;
+    assert_eq!(p.accent.info, hex("#a78bfa"), "the dark one on a dark card");
+    assert_eq!(p.primary, hex("#a78bfa"));
+    assert_ne!(p.primary_hover, p.primary);
+    assert_eq!(
+        p.background,
+        DARK.resolved().background,
+        "the rest unchanged"
+    );
+    assert_eq!(p.accent.success, DARK.resolved().accent.success);
+    assert_eq!(by_title(&s, "Org warn").palette.accent.warn, hex("#a78bfa"));
+
+    // Light cards take the light one.
+    e.configure(Config {
+        scheme: Scheme::Light,
+        ..Config::default()
+    });
+    e.sync(&mut s, t0);
+    let p = by_title(&s, "Org").palette;
+    assert_eq!(p.accent.info, hex("#7c3aed"));
+    assert_eq!(p.primary, hex("#7c3aed"));
+    assert_eq!(p.on_primary, LIGHT.resolved().background, "white on violet");
+    assert_eq!(by_title(&s, "Plain").palette, LIGHT.resolved());
+}

@@ -50,7 +50,9 @@ mod darwin;
 
 use std::sync::LazyLock;
 
-pub use config::{Accents, Color, Config, DARK, Kind, LIGHT, Motion, Palette, Scheme, hex, rgb};
+pub use config::{
+    Accents, CardAccent, Color, Config, DARK, Kind, LIGHT, Motion, Palette, Scheme, hex, rgb,
+};
 pub use engine::{CLEAR_KEY, Clear, Engine, Look, Mouse, Surface, Wheel};
 pub use note::{
     Action, CORNER_BOTTOM_LEFT, CORNER_BOTTOM_RIGHT, CORNER_TOP_LEFT, CORNER_TOP_RIGHT, Callback,
